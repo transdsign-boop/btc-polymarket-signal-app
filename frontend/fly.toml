@@ -1,4 +1,4 @@
-app = "REPLACE_WITH_FRONTEND_APP_NAME"
+app = "btc-poly-frontend-02170733"
 primary_region = "iad"
 
 [build]
