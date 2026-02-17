@@ -537,6 +537,10 @@ class ArbitrageEngine:
         self._synonyms = {
             "btc": "bitcoin",
             "eth": "ethereum",
+            "usdt": "tether",
+            "spx": "sp500",
+            "s&p": "sp500",
+            "snp": "sp500",
             "trump's": "trump",
             "u.s.": "us",
             "usa": "us",
@@ -546,55 +550,188 @@ class ArbitrageEngine:
             "winning": "win",
             "exceed": "above",
             "reach": "hit",
+            "attain": "hit",
+            ">= ": "above",
+            "<= ": "below",
         }
+        self._month_tokens = {
+            "jan",
+            "january",
+            "feb",
+            "february",
+            "mar",
+            "march",
+            "apr",
+            "april",
+            "may",
+            "jun",
+            "june",
+            "jul",
+            "july",
+            "aug",
+            "august",
+            "sep",
+            "sept",
+            "september",
+            "oct",
+            "october",
+            "nov",
+            "november",
+            "dec",
+            "december",
+            "q1",
+            "q2",
+            "q3",
+            "q4",
+        }
+        self._anchor_tokens = {
+            "bitcoin",
+            "ethereum",
+            "solana",
+            "dogecoin",
+            "trump",
+            "biden",
+            "harris",
+            "president",
+            "vote",
+            "senate",
+            "house",
+            "fed",
+            "fomc",
+            "cpi",
+            "inflation",
+            "recession",
+            "gdp",
+            "unemployment",
+            "sp500",
+            "nasdaq",
+            "dow",
+            "gold",
+            "oil",
+            "war",
+            "ceasefire",
+            "nato",
+            "ukraine",
+            "israel",
+            "china",
+            "ai",
+            "openai",
+        }
+        self._max_links_per_market = 2
+
+    def _expand_token(self, token: str) -> List[str]:
+        out = [token]
+        if re.fullmatch(r"\d+(\.\d+)?k", token):
+            out.append(str(int(float(token[:-1]) * 1000)))
+        elif re.fullmatch(r"\d+(\.\d+)?m", token):
+            out.append(str(int(float(token[:-1]) * 1000000)))
+        return out
 
     def _normalize_title(self, title: str) -> Tuple[str, List[str]]:
         text = title.lower()
         text = text.replace("$", " ")
         text = text.replace("%", " percent ")
         text = re.sub(r"[^a-z0-9\s]", " ", text)
-        raw_tokens = [t for t in text.split() if t]
+        raw_tokens: List[str] = []
+        for token in [t for t in text.split() if t]:
+            raw_tokens.extend(self._expand_token(token))
         mapped = [self._synonyms.get(t, t) for t in raw_tokens]
         tokens = [t for t in mapped if t not in self._stopwords]
         # Keep numeric anchors and important long tokens.
         tokens = [t for t in tokens if t.isdigit() or len(t) >= 3]
         return " ".join(tokens), tokens
 
-    def _blend_match_score(self, a_title: str, b_title: str) -> int:
-        a_norm, a_tokens = self._normalize_title(a_title)
-        b_norm, b_tokens = self._normalize_title(b_title)
-        if not a_norm or not b_norm:
+    def _market_features(self, market: MarketSnapshot) -> Dict[str, Any]:
+        enriched = market.title
+        # Kalshi tickers often contain strong anchors (asset + date/threshold).
+        if market.platform == "Kalshi":
+            enriched = f"{enriched} {market.market_id}"
+        norm, tokens = self._normalize_title(enriched)
+        token_set = set(tokens)
+        numbers = {t for t in token_set if t.isdigit()}
+        years = {t for t in numbers if len(t) == 4 and 2000 <= int(t) <= 2100}
+        months = token_set.intersection(self._month_tokens)
+        anchors = token_set.intersection(self._anchor_tokens)
+        return {
+            "norm": norm,
+            "tokens": token_set,
+            "numbers": numbers,
+            "years": years,
+            "months": months,
+            "anchors": anchors,
+        }
+
+    def _blend_match_score(self, a: MarketSnapshot, b: MarketSnapshot) -> int:
+        fa = self._market_features(a)
+        fb = self._market_features(b)
+        if not fa["norm"] or not fb["norm"]:
             return 0
 
-        fuzz_set = fuzz.token_set_ratio(a_norm, b_norm)
-        fuzz_sort = fuzz.token_sort_ratio(a_norm, b_norm)
-        fuzz_partial = fuzz.partial_ratio(a_norm, b_norm)
+        fuzz_set = fuzz.token_set_ratio(fa["norm"], fb["norm"])
+        fuzz_sort = fuzz.token_sort_ratio(fa["norm"], fb["norm"])
+        fuzz_partial = fuzz.partial_ratio(fa["norm"], fb["norm"])
 
-        a_set = set(a_tokens)
-        b_set = set(b_tokens)
+        a_set = fa["tokens"]
+        b_set = fb["tokens"]
         overlap = len(a_set.intersection(b_set))
         denom = max(1, len(a_set.union(b_set)))
         jaccard = int((overlap / denom) * 100)
 
-        # Reward overlap in numbers (dates/thresholds often identify the same market).
-        a_nums = {t for t in a_set if t.isdigit()}
-        b_nums = {t for t in b_set if t.isdigit()}
-        num_bonus = 8 if a_nums.intersection(b_nums) else 0
+        a_nums = fa["numbers"]
+        b_nums = fb["numbers"]
+        shared_numbers = a_nums.intersection(b_nums)
+        shared_anchors = fa["anchors"].intersection(fb["anchors"])
+        shared_months = fa["months"].intersection(fb["months"])
+        shared_years = fa["years"].intersection(fb["years"])
 
-        blended = int(0.45 * fuzz_set + 0.20 * fuzz_sort + 0.15 * fuzz_partial + 0.20 * jaccard + num_bonus)
+        num_bonus = min(12, len(shared_numbers) * 5)
+        anchor_bonus = 10 if shared_anchors else 0
+        time_bonus = 5 if (shared_months or shared_years) else 0
+        year_penalty = -10 if fa["years"] and fb["years"] and not shared_years else 0
+
+        blended = int(
+            0.40 * fuzz_set
+            + 0.20 * fuzz_sort
+            + 0.15 * fuzz_partial
+            + 0.25 * jaccard
+            + num_bonus
+            + anchor_bonus
+            + time_bonus
+            + year_penalty
+        )
+        if fuzz_set < 70 and not shared_anchors and not shared_numbers:
+            return 0
+        if fuzz_set < 82 and not shared_anchors and not (shared_years or shared_months):
+            return 0
         return min(100, max(0, blended))
 
     def match_pairs(self, snapshots: List[MarketSnapshot]) -> List[Tuple[MarketSnapshot, MarketSnapshot, int]]:
-        pairs = []
+        proposals: List[Tuple[MarketSnapshot, MarketSnapshot, int]] = []
         for i in range(len(snapshots)):
             for j in range(i + 1, len(snapshots)):
                 a = snapshots[i]
                 b = snapshots[j]
                 if a.platform == b.platform:
                     continue
-                score = self._blend_match_score(a.title, b.title)
+                score = self._blend_match_score(a, b)
                 if score >= self.match_threshold:
-                    pairs.append((a, b, score))
+                    proposals.append((a, b, score))
+        if not proposals:
+            return []
+
+        proposals = sorted(proposals, key=lambda x: x[2], reverse=True)
+        links: Dict[Tuple[str, str], int] = {}
+        pairs: List[Tuple[MarketSnapshot, MarketSnapshot, int]] = []
+        for a, b, score in proposals:
+            ka = (a.platform, a.market_id)
+            kb = (b.platform, b.market_id)
+            if links.get(ka, 0) >= self._max_links_per_market:
+                continue
+            if links.get(kb, 0) >= self._max_links_per_market:
+                continue
+            pairs.append((a, b, score))
+            links[ka] = links.get(ka, 0) + 1
+            links[kb] = links.get(kb, 0) + 1
         return pairs
 
     def _leg_fee(self, platform: str, price: float, stake: float) -> float:
