@@ -12,10 +12,13 @@ import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 load_dotenv()
 
 app = FastAPI(title="BTC vs Polymarket Signal API")
+FRONTEND_DIST_DIR = Path(__file__).resolve().parent / "frontend_dist"
 
 allowed_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
 extra_origin = os.getenv("FRONTEND_ORIGIN", "").strip()
@@ -366,3 +369,25 @@ def backtest_rows(limit: int = 5000, signal: str = "") -> Dict[str, Any]:
         return {"ok": True, "rows": rows, "count": len(rows)}
     except Exception as exc:
         return {"ok": False, "error": f"Failed to load rows: {exc}", "rows": []}
+
+
+if (FRONTEND_DIST_DIR / "assets").exists():
+    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST_DIR / "assets")), name="assets")
+
+
+@app.get("/")
+def root() -> Any:
+    index_path = FRONTEND_DIST_DIR / "index.html"
+    if index_path.exists():
+        return FileResponse(index_path)
+    return {"ok": True, "message": "BTC vs Polymarket Signal API", "ui": "missing frontend_dist/index.html"}
+
+
+@app.get("/{full_path:path}")
+def spa_fallback(full_path: str) -> Any:
+    if full_path.startswith("health") or full_path.startswith("state") or full_path.startswith("tick") or full_path.startswith("backtest/"):
+        return {"detail": "Not Found"}
+    index_path = FRONTEND_DIST_DIR / "index.html"
+    if index_path.exists():
+        return FileResponse(index_path)
+    return {"detail": "Not Found"}

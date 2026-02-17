@@ -1,11 +1,19 @@
+FROM node:20-alpine AS frontend-build
+WORKDIR /frontend
+COPY frontend/package*.json ./
+RUN npm install --no-audit --no-fund
+COPY frontend/ ./
+RUN npm run build
+
 FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY requirements.txt /app/requirements.txt
+COPY backend/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . /app
+COPY backend/ /app/
+COPY --from=frontend-build /frontend/dist /app/frontend_dist
 
 ENV PORT=8080
 EXPOSE 8080
