@@ -126,10 +126,12 @@ def arb_config() -> Dict[str, Any]:
 @app.post("/arb/run-once")
 def arb_run_once() -> Dict[str, Any]:
     opportunities = monitor_service.run_cycle()
+    report = monitor_service.scan_report(limit=500)
     return {
         "ok": True,
         "count": len(opportunities),
         "opportunities": opportunities,
+        "scan_report": report,
     }
 
 

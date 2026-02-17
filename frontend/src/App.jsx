@@ -54,7 +54,11 @@ export default function App() {
   const onRunOnce = async () => {
     setError('')
     try {
-      await api.runOnce()
+      const res = await api.runOnce()
+      setOpps(res?.opportunities || [])
+      if (res?.scan_report) {
+        setScanReport(res.scan_report)
+      }
       await refresh()
     } catch (e) {
       setError(e.message || 'run once failed')
