@@ -211,20 +211,55 @@ class PolymarketClient(BasePredictionMarketClient):
         self.ws_stop.set()
 
     def get_active_markets(self) -> List[Dict[str, Any]]:
-        for url in [f"{self.gamma_url}/markets", f"{self.gamma_url}/events"]:
-            data = self._request_json("GET", url, headers=self._auth_headers())
+        # Gamma default listing often includes historical rows. Query open markets explicitly.
+        out: List[Dict[str, Any]] = []
+        seen_ids = set()
+        for offset in [0, 200, 400]:
+            data = self._request_json(
+                "GET",
+                f"{self.gamma_url}/markets",
+                headers=self._auth_headers(),
+                params={"closed": "false", "active": "true", "limit": 200, "offset": offset},
+            )
             time.sleep(POLY_SLEEP_BETWEEN_CALLS)
-            if isinstance(data, list) and data:
-                out = []
-                for row in data:
-                    title = row.get("question") or row.get("title") or row.get("name")
-                    market_id = row.get("id") or row.get("market_id") or row.get("slug")
-                    active = row.get("active", True)
-                    closed = row.get("closed", False)
-                    if title and market_id and active and not closed:
-                        out.append({"market_id": str(market_id), "title": str(title), "raw": row})
-                if out:
-                    return out
+            if not isinstance(data, list) or not data:
+                break
+
+            for row in data:
+                title = row.get("question") or row.get("title") or row.get("name")
+                market_id = row.get("id") or row.get("market_id") or row.get("slug")
+                active = row.get("active", True)
+                closed = row.get("closed", False)
+                if not (title and market_id and active and not closed):
+                    continue
+                market_id_str = str(market_id)
+                if market_id_str in seen_ids:
+                    continue
+                seen_ids.add(market_id_str)
+                out.append({"market_id": market_id_str, "title": str(title), "raw": row})
+
+        if out:
+            return out
+
+        # Fallback to events endpoint if markets endpoint is unavailable.
+        data = self._request_json(
+            "GET",
+            f"{self.gamma_url}/events",
+            headers=self._auth_headers(),
+            params={"closed": "false", "active": "true", "limit": 200},
+        )
+        time.sleep(POLY_SLEEP_BETWEEN_CALLS)
+        if isinstance(data, list) and data:
+            for row in data:
+                title = row.get("question") or row.get("title") or row.get("name")
+                market_id = row.get("id") or row.get("market_id") or row.get("slug")
+                active = row.get("active", True)
+                closed = row.get("closed", False)
+                if title and market_id and active and not closed:
+                    out.append({"market_id": str(market_id), "title": str(title), "raw": row})
+            if out:
+                return out
+
         if self.mock_if_unavailable:
             return self._mock_markets()
         return []
