@@ -665,11 +665,13 @@ class ArbMonitorService:
         engine: ArbitrageEngine,
         logger: logging.Logger,
         enable_email_alerts: bool = False,
+        max_markets_per_platform: int = 40,
     ):
         self.clients = clients
         self.engine = engine
         self.logger = logger
         self.enable_email_alerts = enable_email_alerts
+        self.max_markets_per_platform = max(10, int(max_markets_per_platform))
         self.running = False
         self.thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
@@ -691,7 +693,7 @@ class ArbMonitorService:
         for client in self.clients:
             markets = client.get_active_markets()
             self.logger.info("[%s] active markets=%d", client.name, len(markets))
-            for market in markets[:120]:
+            for market in markets[: self.max_markets_per_platform]:
                 snap = client.get_snapshot(market)
                 if snap is not None and np.isfinite(snap.yes_price) and np.isfinite(snap.no_price):
                     snapshots.append(snap)
