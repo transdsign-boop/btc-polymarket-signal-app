@@ -156,6 +156,31 @@ export default function App() {
               {pct(backtestSummary.cum_pnl)}
             </div>
           </article>
+          <article className="card">
+            <div className="label">Max Drawdown</div>
+            <div className="value text-red-300">
+              {pct(backtestSummary.max_drawdown)} {backtestSummary.max_drawdown_pct != null ? `(${pct(backtestSummary.max_drawdown_pct)})` : ''}
+            </div>
+          </article>
+        </section>
+      ) : null}
+
+      {backtestSummary?.walk_forward?.ok ? (
+        <section className="mt-4 grid gap-4 md:grid-cols-3">
+          <article className="card">
+            <div className="label">Walk-Forward Folds</div>
+            <div className="value">{num(backtestSummary.walk_forward.fold_count || 0, 0)}</div>
+          </article>
+          <article className="card">
+            <div className="label">WF Test Win Rate</div>
+            <div className="value">{pct(backtestSummary.walk_forward.aggregate_test?.win_rate)}</div>
+          </article>
+          <article className="card">
+            <div className="label">WF Test Cum PnL</div>
+            <div className={`value ${(backtestSummary.walk_forward.aggregate_test?.cum_pnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-300'}`}>
+              {pct(backtestSummary.walk_forward.aggregate_test?.cum_pnl)}
+            </div>
+          </article>
         </section>
       ) : null}
 

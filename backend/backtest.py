@@ -262,6 +262,144 @@ def classify_regime(features: Dict[str, float]) -> str:
     return "Chop"
 
 
+def apply_signal_rule(row: Dict[str, Any], edge_min: float, max_vol_5m: float) -> bool:
+    edge = row.get("edge")
+    vol = row.get("vol_5m")
+    if edge is None or vol is None:
+        return False
+    return float(edge) > edge_min and float(vol) <= max_vol_5m
+
+
+def trade_metrics(rows: List[Dict[str, Any]], edge_min: float, max_vol_5m: float) -> Dict[str, Any]:
+    trades: List[Dict[str, Any]] = []
+    for r in rows:
+        if r.get("market_prob_up") is None or r.get("outcome_up") is None:
+            continue
+        if apply_signal_rule(r, edge_min=edge_min, max_vol_5m=max_vol_5m):
+            trades.append(r)
+
+    wins = [r for r in trades if float(r["outcome_up"]) >= 0.5]
+    pnl_values = [float(r["trade_pnl"]) for r in trades]
+    edges = [float(r["edge"]) for r in trades]
+
+    # Equity curve and drawdown in probability points.
+    equity = 0.0
+    peak = 0.0
+    max_drawdown = 0.0
+    for p in pnl_values:
+        equity += p
+        peak = max(peak, equity)
+        max_drawdown = max(max_drawdown, peak - equity)
+
+    max_drawdown_pct = (max_drawdown / peak) if peak > 0 else None
+
+    return {
+        "trades": len(trades),
+        "wins": len(wins),
+        "win_rate": (len(wins) / len(trades)) if trades else 0.0,
+        "avg_edge_on_trades": float(np.mean(edges)) if edges else 0.0,
+        "avg_pnl_on_trades": float(np.mean(pnl_values)) if pnl_values else 0.0,
+        "cum_pnl": float(np.sum(pnl_values)) if pnl_values else 0.0,
+        "max_drawdown": float(max_drawdown),
+        "max_drawdown_pct": float(max_drawdown_pct) if max_drawdown_pct is not None else None,
+    }
+
+
+def optimize_signal_params(
+    train_rows: List[Dict[str, Any]],
+    edge_grid: List[float],
+    vol_grid: List[float],
+    min_trades: int,
+) -> Dict[str, float]:
+    best = None
+    for edge_min in edge_grid:
+        for max_vol_5m in vol_grid:
+            m = trade_metrics(train_rows, edge_min=edge_min, max_vol_5m=max_vol_5m)
+            if m["trades"] < min_trades:
+                continue
+            # Primary objective: cumulative pnl, tie-break by avg pnl then win rate.
+            key = (m["cum_pnl"], m["avg_pnl_on_trades"], m["win_rate"])
+            if best is None or key > best["key"]:
+                best = {"key": key, "edge_min": edge_min, "max_vol_5m": max_vol_5m}
+
+    if best is None:
+        return {"edge_min": 0.11, "max_vol_5m": 0.002}
+    return {"edge_min": float(best["edge_min"]), "max_vol_5m": float(best["max_vol_5m"])}
+
+
+def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Dict[str, Any]:
+    eligible = [
+        r for r in rows if r.get("market_prob_up") is not None and r.get("outcome_up") is not None
+    ]
+    eligible = sorted(eligible, key=lambda x: int(x["start_ts"]))
+    n = len(eligible)
+    train_n = int(args.wf_train_rows)
+    test_n = int(args.wf_test_rows)
+    min_trades = int(args.wf_min_trades)
+
+    if n < train_n + test_n:
+        return {
+            "ok": False,
+            "error": "Not enough rows for walk-forward with current train/test sizes.",
+            "eligible_rows": n,
+        }
+
+    edge_grid = [i / 100 for i in range(0, 31)]
+    vol_grid = [0.0015, 0.0018, 0.0020, 0.0022, 0.0025, 0.0030]
+    folds: List[Dict[str, Any]] = []
+
+    start = 0
+    while start + train_n + test_n <= n:
+        train_rows = eligible[start : start + train_n]
+        test_rows = eligible[start + train_n : start + train_n + test_n]
+
+        params = optimize_signal_params(
+            train_rows=train_rows,
+            edge_grid=edge_grid,
+            vol_grid=vol_grid,
+            min_trades=min_trades,
+        )
+
+        train_m = trade_metrics(train_rows, params["edge_min"], params["max_vol_5m"])
+        test_m = trade_metrics(test_rows, params["edge_min"], params["max_vol_5m"])
+
+        folds.append(
+            {
+                "train_start_iso": utc_iso(int(train_rows[0]["start_ts"])),
+                "train_end_iso": utc_iso(int(train_rows[-1]["start_ts"])),
+                "test_start_iso": utc_iso(int(test_rows[0]["start_ts"])),
+                "test_end_iso": utc_iso(int(test_rows[-1]["start_ts"])),
+                "params": params,
+                "train": train_m,
+                "test": test_m,
+            }
+        )
+
+        # Rolling windows (step by test window size).
+        start += test_n
+
+    test_cum_pnl = float(np.sum([f["test"]["cum_pnl"] for f in folds])) if folds else 0.0
+    test_trades = int(np.sum([f["test"]["trades"] for f in folds])) if folds else 0
+    test_wins = int(np.sum([f["test"]["wins"] for f in folds])) if folds else 0
+
+    return {
+        "ok": True,
+        "folds": folds,
+        "fold_count": len(folds),
+        "aggregate_test": {
+            "cum_pnl": test_cum_pnl,
+            "trades": test_trades,
+            "wins": test_wins,
+            "win_rate": (test_wins / test_trades) if test_trades else 0.0,
+        },
+        "config": {
+            "train_rows": train_n,
+            "test_rows": test_n,
+            "min_trades": min_trades,
+        },
+    }
+
+
 def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
     fee_buffer = float(args.fee_buffer)
     signal_edge_min = float(args.signal_edge_min)
@@ -400,21 +538,22 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
             writer.writeheader()
             writer.writerows(rows)
 
-    trades = [r for r in rows if r["signal"] == "TRADE" and r["outcome_up"] is not None and r["market_prob_up"] is not None]
-    wins = [r for r in trades if (r["outcome_up"] or 0.0) >= 0.5]
+    trade_summary = trade_metrics(rows, edge_min=signal_edge_min, max_vol_5m=signal_max_vol_5m)
 
     summary = {
         "series_slug": SERIES_SLUG,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "events_total": len(filtered_events),
         "rows_evaluated": len(rows),
-        "trades": len(trades),
-        "trade_rate": (len(trades) / len(rows)) if rows else 0.0,
-        "wins": len(wins),
-        "win_rate": (len(wins) / len(trades)) if trades else 0.0,
-        "avg_edge_on_trades": (float(np.mean([r["edge"] for r in trades])) if trades else 0.0),
-        "avg_pnl_on_trades": (float(np.mean([r["trade_pnl"] for r in trades])) if trades else 0.0),
-        "cum_pnl": float(np.sum([r["trade_pnl"] for r in trades])) if trades else 0.0,
+        "trades": trade_summary["trades"],
+        "trade_rate": (trade_summary["trades"] / len(rows)) if rows else 0.0,
+        "wins": trade_summary["wins"],
+        "win_rate": trade_summary["win_rate"],
+        "avg_edge_on_trades": trade_summary["avg_edge_on_trades"],
+        "avg_pnl_on_trades": trade_summary["avg_pnl_on_trades"],
+        "cum_pnl": trade_summary["cum_pnl"],
+        "max_drawdown": trade_summary["max_drawdown"],
+        "max_drawdown_pct": trade_summary["max_drawdown_pct"],
         "notes": [
             "BTC features are approximated from 1-minute Binance US candles, not 5-second ticks.",
             "Market implied probability is taken from CLOB prices-history nearest to market startTime (fallback near end).",
@@ -425,6 +564,9 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
             "max_vol_5m": signal_max_vol_5m,
         },
     }
+
+    if args.walk_forward:
+        summary["walk_forward"] = run_walk_forward(rows, args)
 
     summary_file = out_dir / "backtest_summary.json"
     summary_file.write_text(json.dumps(summary, indent=2))
@@ -446,6 +588,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-events", type=int, default=0, help="If >0, backtest only the most recent N events")
     parser.add_argument("--signal-edge-min", type=float, default=float(os.getenv("SIGNAL_EDGE_MIN", "0.11")))
     parser.add_argument("--signal-max-vol-5m", type=float, default=float(os.getenv("SIGNAL_MAX_VOL_5M", "0.002")))
+    parser.add_argument("--walk-forward", action="store_true", help="Run walk-forward validation and include it in summary")
+    parser.add_argument("--wf-train-rows", type=int, default=600)
+    parser.add_argument("--wf-test-rows", type=int, default=120)
+    parser.add_argument("--wf-min-trades", type=int, default=20)
     args = parser.parse_args()
 
     if args.include_open:
