@@ -399,9 +399,6 @@ class KalshiClient(BasePredictionMarketClient):
         if len(re.findall(r"\byes\b", t)) >= 2 or len(re.findall(r"\bno\b", t)) >= 2:
             return False
 
-        # Keep reasonably question-like single events.
-        if "?" not in t and not t.startswith("will "):
-            return False
         return True
 
     def get_active_markets(self) -> List[Dict[str, Any]]:
