@@ -856,12 +856,36 @@ class ArbMonitorService:
         if not other_markets:
             return sorted(source_markets, key=self._market_liquidity_hint, reverse=True)
 
-        other_feats = [self._coarse_market_features(m) for m in other_markets]
+        other_rows: List[Tuple[Dict[str, Any], Dict[str, Any], float]] = []
+        other_index: Dict[str, List[int]] = {}
+        for idx, market in enumerate(other_markets):
+            feat = self._coarse_market_features(market)
+            liq = self._market_liquidity_hint(market)
+            other_rows.append((market, feat, liq))
+            keys = feat["anchors"].union(feat["numbers"])
+            for key in keys:
+                other_index.setdefault(key, []).append(idx)
+
+        hot_other = sorted(other_rows, key=lambda x: x[2], reverse=True)[:40]
         ranked: List[Tuple[int, float, Dict[str, Any]]] = []
         for market in source_markets:
             feat = self._coarse_market_features(market)
+            candidate_ids: set[int] = set()
+            for key in feat["anchors"].union(feat["numbers"]):
+                for idx in other_index.get(key, [])[:80]:
+                    candidate_ids.add(idx)
+                    if len(candidate_ids) >= 120:
+                        break
+                if len(candidate_ids) >= 120:
+                    break
+
+            if candidate_ids:
+                candidates = [other_rows[idx] for idx in candidate_ids]
+            else:
+                candidates = hot_other
+
             best = 0
-            for other_feat in other_feats:
+            for _, other_feat, _ in candidates:
                 s = self._coarse_match_score(feat, other_feat)
                 if s > best:
                     best = s
