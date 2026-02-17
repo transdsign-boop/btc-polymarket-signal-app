@@ -25,7 +25,7 @@ except Exception:
 
 
 REQUEST_TIMEOUT = 12
-DEFAULT_MATCH_THRESHOLD = 80
+DEFAULT_MATCH_THRESHOLD = 72
 DEFAULT_MIN_SPREAD = 0.02
 DEFAULT_TARGET_NOTIONAL = 1000.0
 DEFAULT_START_CAPITAL = 10000.0
@@ -551,8 +551,6 @@ class ArbitrageEngine:
             "exceed": "above",
             "reach": "hit",
             "attain": "hit",
-            ">= ": "above",
-            "<= ": "below",
         }
         self._month_tokens = {
             "jan",
@@ -699,9 +697,9 @@ class ArbitrageEngine:
             + time_bonus
             + year_penalty
         )
-        if fuzz_set < 70 and not shared_anchors and not shared_numbers:
+        if fuzz_set < 66 and not shared_anchors and not shared_numbers:
             return 0
-        if fuzz_set < 82 and not shared_anchors and not (shared_years or shared_months):
+        if fuzz_set < 74 and not shared_anchors and not (shared_years or shared_months):
             return 0
         return min(100, max(0, blended))
 

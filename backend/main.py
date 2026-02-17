@@ -53,7 +53,7 @@ ALLOW_DEMO_BACKTEST_DATA = os.getenv("ALLOW_DEMO_BACKTEST_DATA", "false").lower(
 logger = setup_logging(LOG_FILE)
 engine = ArbitrageEngine(
     logger=logger,
-    match_threshold=int(os.getenv("MATCH_THRESHOLD", "80")),
+    match_threshold=int(os.getenv("MATCH_THRESHOLD", "72")),
     min_spread=float(os.getenv("MIN_SPREAD", "0.02")),
     target_notional=float(os.getenv("TARGET_NOTIONAL", "1000")),
 )
