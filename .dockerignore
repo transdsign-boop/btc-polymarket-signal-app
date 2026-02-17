@@ -1,8 +1,0 @@
-.git
-.gitignore
-**/__pycache__/
-**/*.pyc
-backend/.venv/
-backend/.env
-frontend/node_modules/
-backend/backtest_results/cache/

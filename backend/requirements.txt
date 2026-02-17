@@ -3,8 +3,3 @@ uvicorn[standard]
 requests
 python-dotenv
 numpy
-pandas
-fuzzywuzzy
-websocket-client
-schedule
-matplotlib

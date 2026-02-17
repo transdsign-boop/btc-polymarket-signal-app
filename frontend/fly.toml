@@ -1,4 +1,4 @@
-app = "prediction-arb-monitor-frontend"
+app = "btc-poly-frontend-02170733"
 primary_region = "iad"
 
 [build]

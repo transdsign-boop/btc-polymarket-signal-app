@@ -1,17 +1,9 @@
 *
 !.gitignore
 !README.md
-!.dockerignore
-!Dockerfile
-!fly.toml
-!.github/
-!.github/**
 !backend/
 !backend/**
 !frontend/
 !frontend/**
 backend/.venv/
 backend/backtest_results/cache/
-backend/backtest_results/*.csv
-backend/backtest_results/*.json
-backend/arb_log.txt

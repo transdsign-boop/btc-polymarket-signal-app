@@ -310,7 +310,6 @@ def optimize_signal_params(
     edge_grid: List[float],
     vol_grid: List[float],
     min_trades: int,
-    dd_penalty: float,
 ) -> Dict[str, float]:
     best = None
     for edge_min in edge_grid:
@@ -318,9 +317,8 @@ def optimize_signal_params(
             m = trade_metrics(train_rows, edge_min=edge_min, max_vol_5m=max_vol_5m)
             if m["trades"] < min_trades:
                 continue
-            # Risk-adjusted objective to reduce overfitting to high-PnL / high-DD parameter pockets.
-            score = float(m["cum_pnl"] - dd_penalty * m["max_drawdown"])
-            key = (score, m["cum_pnl"], -m["max_drawdown"], m["avg_pnl_on_trades"], m["win_rate"])
+            # Primary objective: cumulative pnl, tie-break by avg pnl then win rate.
+            key = (m["cum_pnl"], m["avg_pnl_on_trades"], m["win_rate"])
             if best is None or key > best["key"]:
                 best = {"key": key, "edge_min": edge_min, "max_vol_5m": max_vol_5m}
 
@@ -338,7 +336,6 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
     train_n = int(args.wf_train_rows)
     test_n = int(args.wf_test_rows)
     min_trades = int(args.wf_min_trades)
-    dd_penalty = float(args.wf_dd_penalty)
 
     if n < train_n + test_n:
         return {
@@ -361,7 +358,6 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
             edge_grid=edge_grid,
             vol_grid=vol_grid,
             min_trades=min_trades,
-            dd_penalty=dd_penalty,
         )
 
         train_m = trade_metrics(train_rows, params["edge_min"], params["max_vol_5m"])
@@ -400,7 +396,6 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
             "train_rows": train_n,
             "test_rows": test_n,
             "min_trades": min_trades,
-            "dd_penalty": dd_penalty,
         },
     }
 
@@ -508,9 +503,8 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
             edge = model_prob_up - market_prob_up - fee_buffer
             signal = "TRADE" if (edge > signal_edge_min and features["vol_5m"] <= signal_max_vol_5m) else "SKIP"
 
-        if outcome_up is not None and market_prob_up is not None:
-            # Row-level YES PnL independent of the current signal thresholds.
-            # trade_metrics() applies signal filters later when scoring parameters.
+        if signal == "TRADE" and outcome_up is not None and market_prob_up is not None:
+            # Buy YES at implied probability, then settle to 1/0, minus fee buffer.
             pnl = float(outcome_up - market_prob_up - fee_buffer)
             hit = 1 if outcome_up >= 0.5 else 0
 
@@ -598,12 +592,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wf-train-rows", type=int, default=600)
     parser.add_argument("--wf-test-rows", type=int, default=120)
     parser.add_argument("--wf-min-trades", type=int, default=20)
-    parser.add_argument(
-        "--wf-dd-penalty",
-        type=float,
-        default=float(os.getenv("WF_DD_PENALTY", "0.25")),
-        help="Penalty applied to max drawdown in walk-forward parameter optimization score.",
-    )
     args = parser.parse_args()
 
     if args.include_open:

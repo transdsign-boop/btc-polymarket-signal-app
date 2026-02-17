@@ -1,7 +1,0 @@
-timestamp,platform,market_id,market_title,yes_price,no_price,resolution,liquidity
-2025-09-01 00:00:00,Polymarket,poly_btc_100k_mar,Will BTC hit $100k by March 2026?,0.42,0.58,YES,120000
-2025-09-01 00:00:00,Kalshi,KXBTC100K-26MAR,Will Bitcoin reach 100k by March 2026?,0.46,0.54,YES,98000
-2025-10-01 00:00:00,Polymarket,poly_btc_100k_mar,Will BTC hit $100k by March 2026?,0.50,0.50,YES,130000
-2025-10-01 00:00:00,Kalshi,KXBTC100K-26MAR,Will Bitcoin reach 100k by March 2026?,0.56,0.44,YES,104000
-2025-11-01 00:00:00,Polymarket,poly_btc_100k_mar,Will BTC hit $100k by March 2026?,0.63,0.37,YES,145000
-2025-11-01 00:00:00,Kalshi,KXBTC100K-26MAR,Will Bitcoin reach 100k by March 2026?,0.68,0.32,YES,110000
