@@ -816,14 +816,85 @@ class ArbMonitorService:
             "mock_data_detected": False,
         }
 
+    def _coarse_market_features(self, market: Dict[str, Any]) -> Dict[str, Any]:
+        title = str(market.get("title", ""))
+        norm, tokens = self.engine._normalize_title(title)
+        token_set = set(tokens)
+        numbers = {t for t in token_set if t.isdigit()}
+        anchors = token_set.intersection(self.engine._anchor_tokens)
+        return {
+            "norm": norm,
+            "tokens": token_set,
+            "numbers": numbers,
+            "anchors": anchors,
+        }
+
+    def _market_liquidity_hint(self, market: Dict[str, Any]) -> float:
+        raw = market.get("raw", {})
+        return safe_float(raw.get("liquidityNum") or raw.get("liquidity") or raw.get("volume") or raw.get("open_interest"), 0.0)
+
+    def _coarse_match_score(self, a_feat: Dict[str, Any], b_feat: Dict[str, Any]) -> int:
+        a_norm = a_feat.get("norm", "")
+        b_norm = b_feat.get("norm", "")
+        if not a_norm or not b_norm:
+            return 0
+
+        fuzz_score = fuzz.token_set_ratio(a_norm, b_norm)
+        overlap = len(a_feat["tokens"].intersection(b_feat["tokens"]))
+        num_overlap = len(a_feat["numbers"].intersection(b_feat["numbers"]))
+        anchor_overlap = len(a_feat["anchors"].intersection(b_feat["anchors"]))
+        bonus = min(20, overlap * 2) + min(10, num_overlap * 5) + min(12, anchor_overlap * 6)
+        return min(100, fuzz_score + bonus)
+
+    def _prioritize_markets_for_cross_platform(
+        self,
+        source_markets: List[Dict[str, Any]],
+        other_markets: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if not source_markets:
+            return []
+        if not other_markets:
+            return sorted(source_markets, key=self._market_liquidity_hint, reverse=True)
+
+        other_feats = [self._coarse_market_features(m) for m in other_markets]
+        ranked: List[Tuple[int, float, Dict[str, Any]]] = []
+        for market in source_markets:
+            feat = self._coarse_market_features(market)
+            best = 0
+            for other_feat in other_feats:
+                s = self._coarse_match_score(feat, other_feat)
+                if s > best:
+                    best = s
+            ranked.append((best, self._market_liquidity_hint(market), market))
+
+        # Keep likely cross-platform candidates first, then fill by liquidity.
+        ranked = sorted(ranked, key=lambda x: (x[0], x[1]), reverse=True)
+        strong = [m for score, _, m in ranked if score >= 70]
+        remainder = [m for score, _, m in ranked if score < 70]
+        return strong + remainder
+
     def run_cycle(self) -> List[Dict[str, Any]]:
         snapshots: List[MarketSnapshot] = []
         snapshots_mock = 0
         snapshots_by_platform: Dict[str, int] = {}
+        markets_by_client: Dict[str, List[Dict[str, Any]]] = {}
+        client_lookup: Dict[str, BasePredictionMarketClient] = {}
         for client in self.clients:
             markets = client.get_active_markets()
+            markets_by_client[client.name] = markets
+            client_lookup[client.name] = client
             self.logger.info("[%s] active markets=%d", client.name, len(markets))
-            for market in markets[: self.max_markets_per_platform]:
+
+        for client_name, markets in markets_by_client.items():
+            client = client_lookup[client_name]
+            other_markets: List[Dict[str, Any]] = []
+            for other_client_name, other_list in markets_by_client.items():
+                if other_client_name == client_name:
+                    continue
+                other_markets.extend(other_list)
+
+            prioritized = self._prioritize_markets_for_cross_platform(markets, other_markets)
+            for market in prioritized[: self.max_markets_per_platform]:
                 snap = client.get_snapshot(market)
                 if snap is not None and np.isfinite(snap.yes_price) and np.isfinite(snap.no_price):
                     snapshots.append(snap)
