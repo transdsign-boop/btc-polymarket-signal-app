@@ -287,7 +287,6 @@ class PolymarketClient(BasePredictionMarketClient):
         token_ids = parse_list(raw.get("clobTokenIds"))
         outcomes = [str(x).strip().lower() for x in parse_list(raw.get("outcomes"))]
         yes_token: Optional[str] = None
-        no_token: Optional[str] = None
         if token_ids:
             yes_idx = 0
             if outcomes and len(outcomes) == len(token_ids):
@@ -295,10 +294,7 @@ class PolymarketClient(BasePredictionMarketClient):
                     if outcome in {"yes", "up", "true"}:
                         yes_idx = idx
                         break
-            no_idx = 1 if yes_idx == 0 and len(token_ids) > 1 else 0
             yes_token = str(token_ids[yes_idx])
-            if len(token_ids) > 1:
-                no_token = str(token_ids[no_idx])
 
         def fetch_token_mid(token_id: Optional[str]) -> float:
             if not token_id:
@@ -328,10 +324,9 @@ class PolymarketClient(BasePredictionMarketClient):
             return np.nan
 
         yes = fetch_token_mid(yes_token)
-        no = fetch_token_mid(no_token)
+        no = np.nan
         if np.isfinite(yes) and yes > 0:
-            if not np.isfinite(no):
-                no = max(0.0, 1.0 - yes)
+            no = max(0.0, 1.0 - yes)
             return MarketSnapshot(self.name, market_id, title, float(yes), float(no), float(liq), ts, {"source": "clob_token_mid"})
 
         cached = self.ws_cache.get(market_id)

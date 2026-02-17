@@ -68,7 +68,7 @@ monitor_service = ArbMonitorService(
     engine=engine,
     logger=logger,
     enable_email_alerts=os.getenv("EMAIL_ALERTS_ENABLED", "false").lower() in {"1", "true", "yes"},
-    max_markets_per_platform=int(os.getenv("MAX_MARKETS_PER_PLATFORM", "40")),
+    max_markets_per_platform=int(os.getenv("MAX_MARKETS_PER_PLATFORM", "25")),
 )
 backtester = Backtester(logger=logger, engine=engine)
 
