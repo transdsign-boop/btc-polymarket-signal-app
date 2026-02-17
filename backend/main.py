@@ -29,6 +29,7 @@ app.add_middleware(
 )
 
 BINANCE_TICKER_URL = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+BINANCE_US_TICKER_URL = "https://api.binance.us/api/v3/ticker/price?symbol=BTCUSDT"
 GAMMA_MARKETS_URL = "https://gamma-api.polymarket.com/markets"
 CLOB_MIDPOINT_URL = "https://clob.polymarket.com/midpoint"
 CLOB_PRICE_URL = "https://clob.polymarket.com/price"
@@ -95,13 +96,22 @@ def _poly_headers() -> Dict[str, str]:
 
 
 def fetch_btc_price() -> float:
-    resp = requests.get(BINANCE_TICKER_URL, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
-    price = _safe_float(data.get("price"))
-    if price is None:
-        raise ValueError("Binance response missing numeric 'price'")
-    return price
+    urls = [BINANCE_TICKER_URL, BINANCE_US_TICKER_URL]
+    last_error: Optional[Exception] = None
+
+    for url in urls:
+        try:
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            price = _safe_float(data.get("price"))
+            if price is None:
+                raise ValueError("Binance response missing numeric 'price'")
+            return price
+        except Exception as exc:
+            last_error = exc
+
+    raise ValueError(f"Failed to fetch BTC price from Binance endpoints: {last_error}")
 
 
 def compute_features(prices: List[float]) -> Dict[str, float]:
