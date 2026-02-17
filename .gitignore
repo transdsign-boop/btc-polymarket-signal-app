@@ -5,3 +5,5 @@
 !backend/**
 !frontend/
 !frontend/**
+backend/.venv/
+backend/backtest_results/cache/

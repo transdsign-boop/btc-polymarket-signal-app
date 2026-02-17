@@ -280,6 +280,9 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
             continue
         filtered_events.append(e)
 
+    if args.max_events and args.max_events > 0:
+        filtered_events = filtered_events[-args.max_events :]
+
     if not filtered_events:
         raise RuntimeError("No events to backtest after filtering")
 
@@ -434,6 +437,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--closed-only", action="store_true", default=True)
     parser.add_argument("--include-open", action="store_true", help="Include currently open markets")
     parser.add_argument("--refresh", action="store_true", help="Refresh cached API/candle data")
+    parser.add_argument("--max-events", type=int, default=0, help="If >0, backtest only the most recent N events")
     args = parser.parse_args()
 
     if args.include_open:
