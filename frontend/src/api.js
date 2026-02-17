@@ -18,8 +18,10 @@ export async function fetchBacktestSummary() {
   return res.json()
 }
 
-export async function fetchBacktestRows(limit = 20) {
-  const res = await fetch(`${API_BASE}/backtest/rows?limit=${limit}`)
+export async function fetchBacktestRows(limit = 5000, signal = '') {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (signal) params.set('signal', signal)
+  const res = await fetch(`${API_BASE}/backtest/rows?${params.toString()}`)
   if (!res.ok) throw new Error(`backtest rows failed: ${res.status}`)
   return res.json()
 }

@@ -49,7 +49,7 @@ export default function App() {
     const loadBacktest = async () => {
       try {
         setBacktestError('')
-        const [summaryRes, rowsRes] = await Promise.all([fetchBacktestSummary(), fetchBacktestRows(12)])
+        const [summaryRes, rowsRes] = await Promise.all([fetchBacktestSummary(), fetchBacktestRows(50000, 'TRADE')])
         if (!active) return
 
         if (summaryRes?.ok) {
@@ -133,7 +133,7 @@ export default function App() {
 
       <section className="mt-8">
         <h2 className="text-xl font-semibold">Backtest Results</h2>
-        <p className="mt-1 text-sm text-slate-400">From backend `backtest_results/backtest_summary.json` and `backtest_rows.csv`.</p>
+        <p className="mt-1 text-sm text-slate-400">Showing all rows where signal = TRADE from backend backtest files.</p>
       </section>
 
       {backtestError && !backtestSummary ? (

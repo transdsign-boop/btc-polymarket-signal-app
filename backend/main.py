@@ -338,7 +338,7 @@ def backtest_summary() -> Dict[str, Any]:
 
 
 @app.get("/backtest/rows")
-def backtest_rows(limit: int = 50) -> Dict[str, Any]:
+def backtest_rows(limit: int = 5000, signal: str = "") -> Dict[str, Any]:
     rows_path = BACKTEST_DIR / "backtest_rows.csv"
     if not rows_path.exists():
         return {
@@ -347,12 +347,15 @@ def backtest_rows(limit: int = 50) -> Dict[str, Any]:
             "rows": [],
         }
 
-    max_rows = max(1, min(int(limit), 500))
+    max_rows = max(1, min(int(limit), 50000))
+    wanted_signal = signal.strip().upper()
     rows: List[Dict[str, Any]] = []
     try:
         with rows_path.open(newline="") as f:
             reader = csv.DictReader(f)
             all_rows = list(reader)
+            if wanted_signal:
+                all_rows = [r for r in all_rows if str(r.get("signal", "")).upper() == wanted_signal]
             rows = all_rows[-max_rows:]
         return {"ok": True, "rows": rows, "count": len(rows)}
     except Exception as exc:
