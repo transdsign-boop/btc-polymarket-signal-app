@@ -47,6 +47,8 @@ def setup_logging(log_file: str) -> logging.Logger:
 LOG_FILE = os.getenv("LOG_FILE", "arb_log.txt")
 BACKTEST_DIR = Path(os.getenv("BACKTEST_DIR", "backtest_results"))
 FRONTEND_DIST_DIR = Path(os.getenv("FRONTEND_DIST_DIR", "frontend_dist"))
+ALLOW_MOCK_DATA = os.getenv("ALLOW_MOCK_DATA", "false").lower() in {"1", "true", "yes"}
+ALLOW_DEMO_BACKTEST_DATA = os.getenv("ALLOW_DEMO_BACKTEST_DATA", "false").lower() in {"1", "true", "yes"}
 
 logger = setup_logging(LOG_FILE)
 engine = ArbitrageEngine(
@@ -56,7 +58,11 @@ engine = ArbitrageEngine(
     target_notional=float(os.getenv("TARGET_NOTIONAL", "1000")),
 )
 
-clients = build_clients(logger=logger, include_predictit=os.getenv("INCLUDE_PREDICTIT", "false").lower() in {"1", "true", "yes"})
+clients = build_clients(
+    logger=logger,
+    include_predictit=os.getenv("INCLUDE_PREDICTIT", "false").lower() in {"1", "true", "yes"},
+    allow_mock_data=ALLOW_MOCK_DATA,
+)
 monitor_service = ArbMonitorService(
     clients=clients,
     engine=engine,
@@ -97,6 +103,10 @@ def health() -> Dict[str, Any]:
         "ok": True,
         "service": "prediction-market-arb-monitor",
         "monitor": monitor_service.status(),
+        "data_policy": {
+            "allow_mock_data": ALLOW_MOCK_DATA,
+            "allow_demo_backtest_data": ALLOW_DEMO_BACKTEST_DATA,
+        },
     }
 
 
@@ -108,6 +118,8 @@ def arb_config() -> Dict[str, Any]:
         "min_spread": engine.min_spread,
         "target_notional": engine.target_notional,
         "clients": [c.name for c in clients],
+        "allow_mock_data": ALLOW_MOCK_DATA,
+        "allow_demo_backtest_data": ALLOW_DEMO_BACKTEST_DATA,
     }
 
 
@@ -158,7 +170,12 @@ def backtest_run(payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
     min_spread = float(payload.get("min_spread", engine.min_spread))
     target_notional = float(payload.get("target_notional", engine.target_notional))
 
-    df = backtester.load_data(historical_file, start, end)
+    df = backtester.load_data(
+        historical_file,
+        start,
+        end,
+        allow_demo_data=ALLOW_DEMO_BACKTEST_DATA,
+    )
     result = backtester.run(df, start_capital=start_capital, min_spread=min_spread, target_notional=target_notional)
     paths = write_backtest_outputs(result, BACKTEST_DIR)
 

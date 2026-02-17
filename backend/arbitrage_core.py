@@ -500,9 +500,17 @@ class ArbMonitorService:
         self.stop_event = threading.Event()
         self.last_run: Optional[pd.Timestamp] = None
         self.last_opportunities: List[Dict[str, Any]] = []
+        self.last_cycle_stats: Dict[str, Any] = {
+            "snapshots_total": 0,
+            "snapshots_mock": 0,
+            "pairs_total": 0,
+            "opportunities_total": 0,
+            "mock_data_detected": False,
+        }
 
     def run_cycle(self) -> List[Dict[str, Any]]:
         snapshots: List[MarketSnapshot] = []
+        snapshots_mock = 0
         for client in self.clients:
             markets = client.get_active_markets()
             self.logger.info("[%s] active markets=%d", client.name, len(markets))
@@ -510,6 +518,8 @@ class ArbMonitorService:
                 snap = client.get_snapshot(market)
                 if snap is not None and np.isfinite(snap.yes_price) and np.isfinite(snap.no_price):
                     snapshots.append(snap)
+                    if str(snap.extra.get("source", "")).lower() == "mock":
+                        snapshots_mock += 1
 
         pairs = self.engine.match_pairs(snapshots)
         opportunities: List[ArbOpportunity] = []
@@ -544,6 +554,13 @@ class ArbMonitorService:
 
         self.last_run = pd.Timestamp.utcnow().tz_localize(None)
         self.last_opportunities = serializable
+        self.last_cycle_stats = {
+            "snapshots_total": len(snapshots),
+            "snapshots_mock": snapshots_mock,
+            "pairs_total": len(pairs),
+            "opportunities_total": len(serializable),
+            "mock_data_detected": snapshots_mock > 0,
+        }
         self.logger.info("cycle done: snapshots=%d pairs=%d opportunities=%d", len(snapshots), len(pairs), len(serializable))
         return serializable
 
@@ -587,6 +604,7 @@ class ArbMonitorService:
             "running": self.running,
             "last_run": self.last_run.isoformat() if self.last_run is not None else None,
             "opportunity_count": len(self.last_opportunities),
+            "cycle_stats": self.last_cycle_stats,
         }
 
 
@@ -596,7 +614,13 @@ class Backtester:
         self.engine = engine
         self.execution_prob = execution_prob
 
-    def load_data(self, path: Optional[str], start: Optional[pd.Timestamp], end: Optional[pd.Timestamp]) -> pd.DataFrame:
+    def load_data(
+        self,
+        path: Optional[str],
+        start: Optional[pd.Timestamp],
+        end: Optional[pd.Timestamp],
+        allow_demo_data: bool = False,
+    ) -> pd.DataFrame:
         if path and Path(path).exists():
             if path.lower().endswith(".json"):
                 df = pd.read_json(path)
@@ -604,8 +628,10 @@ class Backtester:
                 df = pd.read_csv(path)
             self.logger.info("loaded historical file %s rows=%d", path, len(df))
         else:
+            if not allow_demo_data:
+                raise ValueError("historical_file is required in strict mode (demo data disabled)")
             df = pd.read_csv(io.StringIO(DEMO_CSV))
-            self.logger.info("using demo historical rows=%d", len(df))
+            self.logger.warning("using demo historical rows=%d", len(df))
 
         required = {"timestamp", "platform", "market_id", "market_title", "yes_price", "no_price"}
         missing = required - set(df.columns)
@@ -705,13 +731,13 @@ class Backtester:
         }
 
 
-def build_clients(logger: logging.Logger, include_predictit: bool) -> List[BasePredictionMarketClient]:
+def build_clients(logger: logging.Logger, include_predictit: bool, allow_mock_data: bool) -> List[BasePredictionMarketClient]:
     clients: List[BasePredictionMarketClient] = [
-        PolymarketClient(logger=logger, mock_if_unavailable=True),
-        KalshiClient(logger=logger, mock_if_unavailable=True),
+        PolymarketClient(logger=logger, mock_if_unavailable=allow_mock_data),
+        KalshiClient(logger=logger, mock_if_unavailable=allow_mock_data),
     ]
     if include_predictit:
-        clients.append(PredictItClient(logger=logger, mock_if_unavailable=True))
+        clients.append(PredictItClient(logger=logger, mock_if_unavailable=allow_mock_data))
     return clients
 
 

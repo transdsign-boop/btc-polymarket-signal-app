@@ -125,6 +125,8 @@ Copy `backend/config.example.env` to `backend/.env` and set:
   - `POLY_WS_URL`
   - `EMAIL_ALERTS_ENABLED` + SMTP values
   - `INCLUDE_PREDICTIT=true`
+  - `ALLOW_MOCK_DATA=false` (default; keeps live monitor real-data-only)
+  - `ALLOW_DEMO_BACKTEST_DATA=false` (default; requires real historical file)
 
 ## Docker (Unified)
 
