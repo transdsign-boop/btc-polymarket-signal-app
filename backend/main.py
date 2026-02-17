@@ -32,6 +32,7 @@ BINANCE_TICKER_URL = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT
 GAMMA_MARKETS_URL = "https://gamma-api.polymarket.com/markets"
 CLOB_MIDPOINT_URL = "https://clob.polymarket.com/midpoint"
 CLOB_PRICE_URL = "https://clob.polymarket.com/price"
+POLYMARKET_API_KEY = os.getenv("POLYMARKET_API_KEY", "").strip()
 
 btc_prices: deque[float] = deque(maxlen=60)
 
@@ -81,6 +82,16 @@ def _sigmoid(x: float) -> float:
 
 def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
+
+
+def _poly_headers() -> Dict[str, str]:
+    if not POLYMARKET_API_KEY:
+        return {}
+    # Some integrations accept bearer auth, others key headers.
+    return {
+        "Authorization": f"Bearer {POLYMARKET_API_KEY}",
+        "X-API-KEY": POLYMARKET_API_KEY,
+    }
 
 
 def fetch_btc_price() -> float:
@@ -141,7 +152,12 @@ def fetch_polymarket_prob(slug: str) -> Dict[str, Any]:
     if not slug:
         return result
 
-    gamma_resp = requests.get(GAMMA_MARKETS_URL, params={"slug": slug}, timeout=12)
+    gamma_resp = requests.get(
+        GAMMA_MARKETS_URL,
+        params={"slug": slug},
+        headers=_poly_headers(),
+        timeout=12,
+    )
     gamma_resp.raise_for_status()
     markets = gamma_resp.json()
 
@@ -170,11 +186,17 @@ def fetch_polymarket_prob(slug: str) -> Dict[str, Any]:
     result["token_id"] = token_id
 
     implied = None
-    mid_resp = requests.get(CLOB_MIDPOINT_URL, params={"token_id": token_id}, timeout=10)
+    mid_resp = requests.get(
+        CLOB_MIDPOINT_URL,
+        params={"token_id": token_id},
+        headers=_poly_headers(),
+        timeout=10,
+    )
     if mid_resp.status_code == 404:
         price_resp = requests.get(
             CLOB_PRICE_URL,
             params={"token_id": token_id, "side": "buy"},
+            headers=_poly_headers(),
             timeout=10,
         )
         price_resp.raise_for_status()
