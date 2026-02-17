@@ -162,9 +162,18 @@ class PolymarketClient(BasePredictionMarketClient):
         self.gamma_url = os.getenv("POLY_GAMMA_URL", "https://gamma-api.polymarket.com")
         self.clob_url = os.getenv("POLY_CLOB_URL", "https://clob.polymarket.com")
         self.ws_url = os.getenv("POLY_WS_URL", "").strip()
+        self.api_key = os.getenv("POLYMARKET_API_KEY", "").strip()
         self.ws_cache: Dict[str, Dict[str, Any]] = {}
         self.ws_stop = threading.Event()
         self.ws_thread: Optional[threading.Thread] = None
+
+    def _auth_headers(self) -> Dict[str, str]:
+        if not self.api_key:
+            return {}
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "X-API-KEY": self.api_key,
+        }
 
     def start_ws(self) -> None:
         if not self.ws_url or WebSocketApp is None:
@@ -203,7 +212,7 @@ class PolymarketClient(BasePredictionMarketClient):
 
     def get_active_markets(self) -> List[Dict[str, Any]]:
         for url in [f"{self.gamma_url}/markets", f"{self.gamma_url}/events"]:
-            data = self._request_json("GET", url)
+            data = self._request_json("GET", url, headers=self._auth_headers())
             time.sleep(POLY_SLEEP_BETWEEN_CALLS)
             if isinstance(data, list) and data:
                 out = []
@@ -226,7 +235,7 @@ class PolymarketClient(BasePredictionMarketClient):
         ts = pd.Timestamp.utcnow().tz_localize(None)
 
         for url in [f"{self.clob_url}/markets/{market_id}", f"{self.clob_url}/book?market={market_id}"]:
-            data = self._request_json("GET", url)
+            data = self._request_json("GET", url, headers=self._auth_headers())
             time.sleep(POLY_SLEEP_BETWEEN_CALLS)
             if not data:
                 continue
