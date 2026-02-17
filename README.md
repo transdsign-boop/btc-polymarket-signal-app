@@ -39,6 +39,29 @@ Open:
 - `GET /state` -> latest in-memory computed state
 - `POST /tick` -> refreshes state and returns it
 
+## Backtest (BTC 5m Up/Down)
+
+Run from `backend/`:
+
+```bash
+cd backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp config.example.env .env
+# set POLYMARKET_API_KEY in .env
+python backtest.py --out-dir backtest_results --refresh
+```
+
+Outputs:
+- `backend/backtest_results/backtest_rows.csv`
+- `backend/backtest_results/backtest_summary.json`
+
+Notes:
+- Backtest targets Polymarket series `btc-up-or-down-5m`.
+- BTC features are approximated from Binance US 1-minute candles.
+- CLOB implied probability is taken from token `prices-history` near market `startTime`.
+
 ## Connect To GitHub
 
 ```bash
