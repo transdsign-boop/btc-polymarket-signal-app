@@ -144,6 +144,11 @@ def arb_opportunities(limit: int = Query(50, ge=1, le=500)) -> Dict[str, Any]:
     }
 
 
+@app.get("/arb/scan-report")
+def arb_scan_report(limit: int = Query(200, ge=1, le=1000)) -> Dict[str, Any]:
+    return monitor_service.scan_report(limit=limit)
+
+
 @app.post("/arb/monitor/start")
 def arb_monitor_start(payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
     interval = int(payload.get("interval_minutes", os.getenv("MONITOR_INTERVAL_MIN", "2")))

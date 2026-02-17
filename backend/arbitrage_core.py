@@ -538,6 +538,10 @@ class ArbitrageEngine:
         out = [self._evaluate_direction(a, b, score), self._evaluate_direction(b, a, score)]
         return [x for x in out if x is not None and x.spread >= self.min_spread]
 
+    def evaluate_pair_all(self, a: MarketSnapshot, b: MarketSnapshot, score: int) -> List[ArbOpportunity]:
+        out = [self._evaluate_direction(a, b, score), self._evaluate_direction(b, a, score)]
+        return [x for x in out if x is not None]
+
     def _evaluate_direction(self, yes_mkt: MarketSnapshot, no_mkt: MarketSnapshot, score: int) -> Optional[ArbOpportunity]:
         warnings: List[str] = []
         if min(yes_mkt.liquidity_usd, no_mkt.liquidity_usd) < self.target_notional:
@@ -595,6 +599,7 @@ class ArbMonitorService:
         self.stop_event = threading.Event()
         self.last_run: Optional[pd.Timestamp] = None
         self.last_opportunities: List[Dict[str, Any]] = []
+        self.last_scan_pairs: List[Dict[str, Any]] = []
         self.last_cycle_stats: Dict[str, Any] = {
             "snapshots_total": 0,
             "snapshots_mock": 0,
@@ -606,6 +611,7 @@ class ArbMonitorService:
     def run_cycle(self) -> List[Dict[str, Any]]:
         snapshots: List[MarketSnapshot] = []
         snapshots_mock = 0
+        snapshots_by_platform: Dict[str, int] = {}
         for client in self.clients:
             markets = client.get_active_markets()
             self.logger.info("[%s] active markets=%d", client.name, len(markets))
@@ -613,15 +619,56 @@ class ArbMonitorService:
                 snap = client.get_snapshot(market)
                 if snap is not None and np.isfinite(snap.yes_price) and np.isfinite(snap.no_price):
                     snapshots.append(snap)
+                    snapshots_by_platform[snap.platform] = snapshots_by_platform.get(snap.platform, 0) + 1
                     if str(snap.extra.get("source", "")).lower() == "mock":
                         snapshots_mock += 1
 
         pairs = self.engine.match_pairs(snapshots)
         opportunities: List[ArbOpportunity] = []
+        scan_pairs: List[Dict[str, Any]] = []
         for a, b, score in pairs:
-            opportunities.extend(self.engine.evaluate_pair(a, b, score))
+            all_dirs = self.engine.evaluate_pair_all(a, b, score)
+            if not all_dirs:
+                continue
+
+            best = sorted(all_dirs, key=lambda x: x.spread, reverse=True)[0]
+            status = "opportunity"
+            reason = "meets_threshold"
+            if "low_liquidity" in best.warnings:
+                status = "rejected"
+                reason = "low_liquidity"
+            elif best.spread < self.engine.min_spread:
+                status = "rejected"
+                reason = "below_min_spread"
+
+            scan_pairs.append(
+                {
+                    "title_a": a.title,
+                    "title_b": b.title,
+                    "platform_a": a.platform,
+                    "platform_b": b.platform,
+                    "market_id_a": a.market_id,
+                    "market_id_b": b.market_id,
+                    "match_score": score,
+                    "best_direction": {
+                        "platform_yes": best.platform_yes,
+                        "platform_no": best.platform_no,
+                        "yes_price": best.yes_price,
+                        "no_price": best.no_price,
+                        "net_cost": best.net_cost,
+                        "spread": best.spread,
+                        "est_profit_usd": best.est_profit_usd,
+                        "warnings": best.warnings,
+                    },
+                    "status": status,
+                    "reason": reason,
+                }
+            )
+
+            opportunities.extend([x for x in all_dirs if x.spread >= self.engine.min_spread and "low_liquidity" not in x.warnings])
 
         opportunities = sorted(opportunities, key=lambda x: x.expected_profit_pct, reverse=True)
+        scan_pairs = sorted(scan_pairs, key=lambda x: x["best_direction"]["spread"], reverse=True)
         serializable: List[Dict[str, Any]] = []
         for opp in opportunities:
             if "low_liquidity" in opp.warnings:
@@ -649,9 +696,11 @@ class ArbMonitorService:
 
         self.last_run = pd.Timestamp.utcnow().tz_localize(None)
         self.last_opportunities = serializable
+        self.last_scan_pairs = scan_pairs
         self.last_cycle_stats = {
             "snapshots_total": len(snapshots),
             "snapshots_mock": snapshots_mock,
+            "snapshots_by_platform": snapshots_by_platform,
             "pairs_total": len(pairs),
             "opportunities_total": len(serializable),
             "mock_data_detected": snapshots_mock > 0,
@@ -700,6 +749,16 @@ class ArbMonitorService:
             "last_run": self.last_run.isoformat() if self.last_run is not None else None,
             "opportunity_count": len(self.last_opportunities),
             "cycle_stats": self.last_cycle_stats,
+        }
+
+    def scan_report(self, limit: int = 200) -> Dict[str, Any]:
+        return {
+            "ok": True,
+            "last_run": self.last_run.isoformat() if self.last_run is not None else None,
+            "cycle_stats": self.last_cycle_stats,
+            "pair_count": len(self.last_scan_pairs),
+            "pairs": self.last_scan_pairs[:limit],
+            "opportunity_count": len(self.last_opportunities),
         }
 
 

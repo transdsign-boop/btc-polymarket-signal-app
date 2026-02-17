@@ -16,6 +16,7 @@ export default function App() {
   const [monitor, setMonitor] = useState(null)
   const [config, setConfig] = useState(null)
   const [opps, setOpps] = useState([])
+  const [scanReport, setScanReport] = useState(null)
   const [intervalMinutes, setIntervalMinutes] = useState(2)
   const [backtest, setBacktest] = useState(null)
   const [trades, setTrades] = useState([])
@@ -24,16 +25,18 @@ export default function App() {
 
   const refresh = async () => {
     try {
-      const [cfg, status, opportunities, summary, tradeRows] = await Promise.all([
+      const [cfg, status, opportunities, scan, summary, tradeRows] = await Promise.all([
         api.config(),
         api.monitorStatus(),
         api.opportunities(100),
+        api.scanReport(300),
         api.backtestSummary().catch(() => null),
         api.backtestTrades(200).catch(() => ({ rows: [] }))
       ])
       setConfig(cfg)
       setMonitor(status)
       setOpps(opportunities?.opportunities || [])
+      setScanReport(scan || null)
       setBacktest(summary?.summary || null)
       setTrades(tradeRows?.rows || [])
       setError('')
@@ -111,6 +114,10 @@ export default function App() {
           <div className="value">{monitor?.opportunity_count ?? 0}</div>
         </article>
         <article className="card">
+          <div className="label">Matched Pairs</div>
+          <div className="value">{scanReport?.pair_count ?? monitor?.cycle_stats?.pairs_total ?? 0}</div>
+        </article>
+        <article className="card">
           <div className="label">Matching Threshold</div>
           <div className="value">{config?.match_threshold ?? 'N/A'}</div>
         </article>
@@ -176,6 +183,50 @@ export default function App() {
             {!opps.length ? (
               <tr>
                 <td className="px-3 py-4 text-slate-400" colSpan={7}>No opportunities yet. Run scan or start monitor.</td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </section>
+
+      <section className="mt-8">
+        <h2 className="text-xl font-semibold">Scan Diagnostics</h2>
+        <p className="mt-1 text-sm text-slate-400">
+          Shows matched cross-platform pairs and why they were accepted or rejected.
+        </p>
+      </section>
+
+      <section className="mt-3 overflow-x-auto rounded-2xl border border-slate-800 bg-panel/60">
+        <table className="min-w-full text-sm">
+          <thead className="bg-slate-900/70 text-slate-300">
+            <tr>
+              <th className="px-3 py-2 text-left">Pair</th>
+              <th className="px-3 py-2 text-left">Match Score</th>
+              <th className="px-3 py-2 text-left">Best Spread</th>
+              <th className="px-3 py-2 text-left">Est Profit</th>
+              <th className="px-3 py-2 text-left">Status</th>
+              <th className="px-3 py-2 text-left">Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(scanReport?.pairs || []).map((row, i) => (
+              <tr key={`${row.market_id_a}-${row.market_id_b}-${i}`} className="border-t border-slate-800">
+                <td className="px-3 py-2">
+                  <div className="font-medium">{row.platform_a}:{row.market_id_a}</div>
+                  <div className="text-xs text-slate-400">{row.platform_b}:{row.market_id_b}</div>
+                </td>
+                <td className="px-3 py-2">{row.match_score}</td>
+                <td className={`px-3 py-2 ${(Number(row.best_direction?.spread) || 0) >= 0 ? 'text-emerald-400' : 'text-red-300'}`}>
+                  {pct(row.best_direction?.spread)}
+                </td>
+                <td className="px-3 py-2">{money(row.best_direction?.est_profit_usd)}</td>
+                <td className={`px-3 py-2 ${row.status === 'opportunity' ? 'text-emerald-400' : 'text-amber-300'}`}>{row.status}</td>
+                <td className="px-3 py-2 text-xs text-slate-300">{row.reason}</td>
+              </tr>
+            ))}
+            {!(scanReport?.pairs || []).length ? (
+              <tr>
+                <td className="px-3 py-4 text-slate-400" colSpan={6}>No pair diagnostics yet. Run scan once.</td>
               </tr>
             ) : null}
           </tbody>
