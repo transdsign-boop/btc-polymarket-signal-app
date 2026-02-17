@@ -95,6 +95,45 @@ def _poly_headers() -> Dict[str, str]:
     }
 
 
+def _fetch_market_by_slug(slug: str) -> Optional[Dict[str, Any]]:
+    gamma_resp = requests.get(
+        GAMMA_MARKETS_URL,
+        params={"slug": slug},
+        headers=_poly_headers(),
+        timeout=12,
+    )
+    gamma_resp.raise_for_status()
+    markets = gamma_resp.json()
+    if isinstance(markets, list) and markets:
+        return markets[0]
+    return None
+
+
+def _resolve_polymarket_slug(slug: str) -> str:
+    # Auto mode for rolling "Bitcoin Up or Down" 5m markets.
+    if slug != "btc-updown-5m-auto":
+        return slug
+
+    now = int(time.time())
+    step = 300
+    current_end = ((now + step - 1) // step) * step
+    candidates = [current_end + i * step for i in range(0, 24)]
+
+    for end_ts in candidates:
+        candidate_slug = f"btc-updown-5m-{end_ts}"
+        try:
+            market = _fetch_market_by_slug(candidate_slug)
+            if not market:
+                continue
+            if market.get("closed") is True:
+                continue
+            return candidate_slug
+        except Exception:
+            continue
+
+    return slug
+
+
 def fetch_btc_price() -> float:
     urls = [BINANCE_TICKER_URL, BINANCE_US_TICKER_URL]
     last_error: Optional[Exception] = None
@@ -152,29 +191,20 @@ def classify_regime(features: Dict[str, float]) -> str:
 
 
 def fetch_polymarket_prob(slug: str) -> Dict[str, Any]:
+    resolved_slug = _resolve_polymarket_slug(slug)
     result: Dict[str, Any] = {
-        "slug": slug,
+        "slug": resolved_slug,
         "market_title": None,
         "token_id": None,
         "implied_prob_up": None,
     }
 
-    if not slug:
+    if not resolved_slug:
         return result
 
-    gamma_resp = requests.get(
-        GAMMA_MARKETS_URL,
-        params={"slug": slug},
-        headers=_poly_headers(),
-        timeout=12,
-    )
-    gamma_resp.raise_for_status()
-    markets = gamma_resp.json()
-
-    if not isinstance(markets, list) or not markets:
+    market = _fetch_market_by_slug(resolved_slug)
+    if not market:
         return result
-
-    market = markets[0]
     result["market_title"] = market.get("question") or market.get("title")
 
     token_ids = _parse_maybe_json_array(market.get("clobTokenIds"))
