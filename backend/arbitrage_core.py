@@ -25,7 +25,7 @@ except Exception:
 
 
 REQUEST_TIMEOUT = 12
-DEFAULT_MATCH_THRESHOLD = 72
+DEFAULT_MATCH_THRESHOLD = 60
 DEFAULT_MIN_SPREAD = 0.02
 DEFAULT_TARGET_NOTIONAL = 1000.0
 DEFAULT_START_CAPITAL = 10000.0
@@ -697,11 +697,25 @@ class ArbitrageEngine:
             + time_bonus
             + year_penalty
         )
-        if fuzz_set < 66 and not shared_anchors and not shared_numbers:
+        if fuzz_set < 58 and not shared_anchors and not shared_numbers:
             return 0
-        if fuzz_set < 74 and not shared_anchors and not (shared_years or shared_months):
+        if fuzz_set < 68 and not shared_anchors and not shared_numbers and not (shared_years or shared_months):
             return 0
         return min(100, max(0, blended))
+
+    def rank_pair_candidates(self, snapshots: List[MarketSnapshot], limit: int = 80) -> List[Tuple[MarketSnapshot, MarketSnapshot, int]]:
+        scored: List[Tuple[MarketSnapshot, MarketSnapshot, int]] = []
+        for i in range(len(snapshots)):
+            for j in range(i + 1, len(snapshots)):
+                a = snapshots[i]
+                b = snapshots[j]
+                if a.platform == b.platform:
+                    continue
+                score = self._blend_match_score(a, b)
+                if score > 0:
+                    scored.append((a, b, score))
+        scored = sorted(scored, key=lambda x: x[2], reverse=True)
+        return scored[: max(1, int(limit))]
 
     def match_pairs(self, snapshots: List[MarketSnapshot]) -> List[Tuple[MarketSnapshot, MarketSnapshot, int]]:
         proposals: List[Tuple[MarketSnapshot, MarketSnapshot, int]] = []
@@ -808,6 +822,7 @@ class ArbMonitorService:
         self.last_run: Optional[pd.Timestamp] = None
         self.last_opportunities: List[Dict[str, Any]] = []
         self.last_scan_pairs: List[Dict[str, Any]] = []
+        self.last_top_candidates: List[Dict[str, Any]] = []
         self.last_cycle_stats: Dict[str, Any] = {
             "snapshots_total": 0,
             "snapshots_mock": 0,
@@ -927,6 +942,7 @@ class ArbMonitorService:
                         snapshots_mock += 1
 
         pairs = self.engine.match_pairs(snapshots)
+        top_candidates = self.engine.rank_pair_candidates(snapshots, limit=100)
         opportunities: List[ArbOpportunity] = []
         scan_pairs: List[Dict[str, Any]] = []
         for a, b, score in pairs:
@@ -972,6 +988,18 @@ class ArbMonitorService:
 
         opportunities = sorted(opportunities, key=lambda x: x.expected_profit_pct, reverse=True)
         scan_pairs = sorted(scan_pairs, key=lambda x: x["best_direction"]["spread"], reverse=True)
+        top_candidates_serializable = [
+            {
+                "title_a": a.title,
+                "title_b": b.title,
+                "platform_a": a.platform,
+                "platform_b": b.platform,
+                "market_id_a": a.market_id,
+                "market_id_b": b.market_id,
+                "match_score": score,
+            }
+            for a, b, score in top_candidates
+        ]
         serializable: List[Dict[str, Any]] = []
         for opp in opportunities:
             if "low_liquidity" in opp.warnings:
@@ -1000,6 +1028,7 @@ class ArbMonitorService:
         self.last_run = pd.Timestamp.utcnow().tz_localize(None)
         self.last_opportunities = serializable
         self.last_scan_pairs = scan_pairs
+        self.last_top_candidates = top_candidates_serializable
         self.last_cycle_stats = {
             "snapshots_total": len(snapshots),
             "snapshots_mock": snapshots_mock,
@@ -1061,6 +1090,8 @@ class ArbMonitorService:
             "cycle_stats": self.last_cycle_stats,
             "pair_count": len(self.last_scan_pairs),
             "pairs": self.last_scan_pairs[:limit],
+            "top_candidate_count": len(self.last_top_candidates),
+            "top_candidates": self.last_top_candidates[:limit],
             "opportunity_count": len(self.last_opportunities),
         }
 

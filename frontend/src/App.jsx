@@ -237,6 +237,45 @@ export default function App() {
         </table>
       </section>
 
+      <section className="mt-6">
+        <h3 className="text-lg font-semibold">Top Candidate Matches</h3>
+        <p className="mt-1 text-sm text-slate-400">
+          Highest-scoring cross-platform title matches, including pairs below the active threshold.
+        </p>
+      </section>
+
+      <section className="mt-3 overflow-x-auto rounded-2xl border border-slate-800 bg-panel/60">
+        <table className="min-w-full text-sm">
+          <thead className="bg-slate-900/70 text-slate-300">
+            <tr>
+              <th className="px-3 py-2 text-left">A</th>
+              <th className="px-3 py-2 text-left">B</th>
+              <th className="px-3 py-2 text-left">Match Score</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(scanReport?.top_candidates || []).slice(0, 40).map((row, i) => (
+              <tr key={`cand-${row.market_id_a}-${row.market_id_b}-${i}`} className="border-t border-slate-800">
+                <td className="px-3 py-2">
+                  <div className="font-medium">{row.platform_a}:{row.market_id_a}</div>
+                  <div className="text-xs text-slate-400">{row.title_a}</div>
+                </td>
+                <td className="px-3 py-2">
+                  <div className="font-medium">{row.platform_b}:{row.market_id_b}</div>
+                  <div className="text-xs text-slate-400">{row.title_b}</div>
+                </td>
+                <td className="px-3 py-2">{row.match_score}</td>
+              </tr>
+            ))}
+            {!(scanReport?.top_candidates || []).length ? (
+              <tr>
+                <td className="px-3 py-4 text-slate-400" colSpan={3}>No candidates yet. Run scan once.</td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </section>
+
       <section className="mt-8">
         <h2 className="text-xl font-semibold">Backtest Summary</h2>
       </section>
