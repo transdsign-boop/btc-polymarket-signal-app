@@ -37,6 +37,8 @@ CLOB_MIDPOINT_URL = "https://clob.polymarket.com/midpoint"
 CLOB_PRICE_URL = "https://clob.polymarket.com/price"
 POLYMARKET_API_KEY = os.getenv("POLYMARKET_API_KEY", "").strip()
 BACKTEST_DIR = Path(os.getenv("BACKTEST_DIR", "backtest_results"))
+SIGNAL_EDGE_MIN = float(os.getenv("SIGNAL_EDGE_MIN", "0.11"))
+SIGNAL_MAX_VOL_5M = float(os.getenv("SIGNAL_MAX_VOL_5M", "0.002"))
 
 btc_prices: deque[float] = deque(maxlen=60)
 
@@ -282,7 +284,7 @@ def compute_state() -> Dict[str, Any]:
     signal = "SKIP"
     if market_prob_up is not None:
         edge = float(model_prob_up - market_prob_up - fee_buffer)
-        signal = "TRADE" if edge > 0 else "SKIP"
+        signal = "TRADE" if (edge > SIGNAL_EDGE_MIN and features["vol_5m"] <= SIGNAL_MAX_VOL_5M) else "SKIP"
 
     latest_state = {
         "ok": True,
@@ -293,6 +295,10 @@ def compute_state() -> Dict[str, Any]:
         "model_prob_up": model_prob_up,
         "polymarket": polymarket,
         "fee_buffer": fee_buffer,
+        "signal_params": {
+            "edge_min": SIGNAL_EDGE_MIN,
+            "max_vol_5m": SIGNAL_MAX_VOL_5M,
+        },
         "edge": edge,
         "signal": signal,
     }

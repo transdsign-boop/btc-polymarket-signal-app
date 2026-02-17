@@ -264,6 +264,8 @@ def classify_regime(features: Dict[str, float]) -> str:
 
 def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
     fee_buffer = float(args.fee_buffer)
+    signal_edge_min = float(args.signal_edge_min)
+    signal_max_vol_5m = float(args.signal_max_vol_5m)
     api_key = os.getenv("POLYMARKET_API_KEY", "").strip()
     http = HTTP(api_key=api_key)
 
@@ -361,7 +363,7 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
 
         if market_prob_up is not None:
             edge = model_prob_up - market_prob_up - fee_buffer
-            signal = "TRADE" if edge > 0 else "SKIP"
+            signal = "TRADE" if (edge > signal_edge_min and features["vol_5m"] <= signal_max_vol_5m) else "SKIP"
 
         if signal == "TRADE" and outcome_up is not None and market_prob_up is not None:
             # Buy YES at implied probability, then settle to 1/0, minus fee buffer.
@@ -418,6 +420,10 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
             "Market implied probability is taken from CLOB prices-history nearest to market startTime (fallback near end).",
             "Fee buffer is modeled as a fixed probability drag per trade.",
         ],
+        "signal_params": {
+            "edge_min": signal_edge_min,
+            "max_vol_5m": signal_max_vol_5m,
+        },
     }
 
     summary_file = out_dir / "backtest_summary.json"
@@ -438,6 +444,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-open", action="store_true", help="Include currently open markets")
     parser.add_argument("--refresh", action="store_true", help="Refresh cached API/candle data")
     parser.add_argument("--max-events", type=int, default=0, help="If >0, backtest only the most recent N events")
+    parser.add_argument("--signal-edge-min", type=float, default=float(os.getenv("SIGNAL_EDGE_MIN", "0.11")))
+    parser.add_argument("--signal-max-vol-5m", type=float, default=float(os.getenv("SIGNAL_MAX_VOL_5M", "0.002")))
     args = parser.parse_args()
 
     if args.include_open:

@@ -1,18 +1,22 @@
 {
   "series_slug": "btc-up-or-down-5m",
-  "generated_at": "2026-02-17T16:51:01.780247+00:00",
+  "generated_at": "2026-02-17T17:05:49.940928+00:00",
   "events_total": 1200,
   "rows_evaluated": 1200,
-  "trades": 478,
-  "trade_rate": 0.3983333333333333,
-  "wins": 242,
-  "win_rate": 0.5062761506276151,
-  "avg_edge_on_trades": 0.11258496034393206,
-  "avg_pnl_on_trades": -0.027531380753138122,
-  "cum_pnl": -13.160000000000023,
+  "trades": 186,
+  "trade_rate": 0.155,
+  "wins": 102,
+  "win_rate": 0.5483870967741935,
+  "avg_edge_on_trades": 0.2002727493012342,
+  "avg_pnl_on_trades": 0.014516129032258022,
+  "cum_pnl": 2.699999999999992,
   "notes": [
     "BTC features are approximated from 1-minute Binance US candles, not 5-second ticks.",
     "Market implied probability is taken from CLOB prices-history nearest to market startTime (fallback near end).",
     "Fee buffer is modeled as a fixed probability drag per trade."
-  ]
+  ],
+  "signal_params": {
+    "edge_min": 0.11,
+    "max_vol_5m": 0.002
+  }
 }
