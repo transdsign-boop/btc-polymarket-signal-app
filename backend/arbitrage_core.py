@@ -268,19 +268,70 @@ class PolymarketClient(BasePredictionMarketClient):
         market_id = market["market_id"]
         title = market["title"]
         ts = pd.Timestamp.utcnow().tz_localize(None)
+        raw = market.get("raw", {})
+        liq = safe_float(raw.get("liquidityNum") or raw.get("liquidity") or raw.get("liquidity_usd") or 0.0, 0.0)
 
-        for url in [f"{self.clob_url}/markets/{market_id}", f"{self.clob_url}/book?market={market_id}"]:
-            data = self._request_json("GET", url, headers=self._auth_headers())
+        def parse_list(v: Any) -> List[Any]:
+            if isinstance(v, list):
+                return v
+            if isinstance(v, str):
+                try:
+                    parsed = json.loads(v)
+                    if isinstance(parsed, list):
+                        return parsed
+                except Exception:
+                    return []
+            return []
+
+        token_ids = parse_list(raw.get("clobTokenIds"))
+        outcomes = [str(x).strip().lower() for x in parse_list(raw.get("outcomes"))]
+        yes_token: Optional[str] = None
+        no_token: Optional[str] = None
+        if token_ids:
+            yes_idx = 0
+            if outcomes and len(outcomes) == len(token_ids):
+                for idx, outcome in enumerate(outcomes):
+                    if outcome in {"yes", "up", "true"}:
+                        yes_idx = idx
+                        break
+            no_idx = 1 if yes_idx == 0 and len(token_ids) > 1 else 0
+            yes_token = str(token_ids[yes_idx])
+            if len(token_ids) > 1:
+                no_token = str(token_ids[no_idx])
+
+        def fetch_token_mid(token_id: Optional[str]) -> float:
+            if not token_id:
+                return np.nan
+            mid = self._request_json(
+                "GET",
+                f"{self.clob_url}/midpoint",
+                headers=self._auth_headers(),
+                params={"token_id": token_id},
+            )
             time.sleep(POLY_SLEEP_BETWEEN_CALLS)
-            if not data:
-                continue
-            yes = safe_float(data.get("yes_price") or data.get("best_ask_yes") or data.get("midpoint") or data.get("price"))
-            no = safe_float(data.get("no_price") or data.get("best_ask_no"))
-            liq = safe_float(data.get("liquidity") or data.get("liquidity_usd") or data.get("depth") or market.get("raw", {}).get("liquidity") or 0.0, 0.0)
-            if np.isfinite(yes) and yes > 0:
-                if not np.isfinite(no):
-                    no = max(0.0, 1.0 - yes)
-                return MarketSnapshot(self.name, market_id, title, float(yes), float(no), float(liq), ts, {"source": url})
+            if isinstance(mid, dict):
+                p = safe_float(mid.get("midpoint") or mid.get("mid") or mid.get("price"))
+                if np.isfinite(p):
+                    return p
+            price = self._request_json(
+                "GET",
+                f"{self.clob_url}/price",
+                headers=self._auth_headers(),
+                params={"token_id": token_id, "side": "buy"},
+            )
+            time.sleep(POLY_SLEEP_BETWEEN_CALLS)
+            if isinstance(price, dict):
+                p = safe_float(price.get("price"))
+                if np.isfinite(p):
+                    return p
+            return np.nan
+
+        yes = fetch_token_mid(yes_token)
+        no = fetch_token_mid(no_token)
+        if np.isfinite(yes) and yes > 0:
+            if not np.isfinite(no):
+                no = max(0.0, 1.0 - yes)
+            return MarketSnapshot(self.name, market_id, title, float(yes), float(no), float(liq), ts, {"source": "clob_token_mid"})
 
         cached = self.ws_cache.get(market_id)
         if cached:
