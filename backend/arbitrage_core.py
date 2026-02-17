@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import random
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -512,6 +513,81 @@ class ArbitrageEngine:
         self.poly_gas = poly_gas
         self.kalshi_fee = kalshi_fee
         self.slippage = slippage
+        self._stopwords = {
+            "will",
+            "the",
+            "a",
+            "an",
+            "of",
+            "in",
+            "on",
+            "for",
+            "by",
+            "to",
+            "be",
+            "before",
+            "after",
+            "during",
+            "over",
+            "under",
+            "than",
+            "at",
+            "is",
+            "are",
+            "do",
+            "does",
+            "did",
+            "if",
+        }
+        self._synonyms = {
+            "btc": "bitcoin",
+            "eth": "ethereum",
+            "trump's": "trump",
+            "u.s.": "us",
+            "usa": "us",
+            "presidential": "president",
+            "election": "vote",
+            "wins": "win",
+            "winning": "win",
+            "exceed": "above",
+            "reach": "hit",
+        }
+
+    def _normalize_title(self, title: str) -> Tuple[str, List[str]]:
+        text = title.lower()
+        text = text.replace("$", " ")
+        text = text.replace("%", " percent ")
+        text = re.sub(r"[^a-z0-9\s]", " ", text)
+        raw_tokens = [t for t in text.split() if t]
+        mapped = [self._synonyms.get(t, t) for t in raw_tokens]
+        tokens = [t for t in mapped if t not in self._stopwords]
+        # Keep numeric anchors and important long tokens.
+        tokens = [t for t in tokens if t.isdigit() or len(t) >= 3]
+        return " ".join(tokens), tokens
+
+    def _blend_match_score(self, a_title: str, b_title: str) -> int:
+        a_norm, a_tokens = self._normalize_title(a_title)
+        b_norm, b_tokens = self._normalize_title(b_title)
+        if not a_norm or not b_norm:
+            return 0
+
+        fuzz_set = fuzz.token_set_ratio(a_norm, b_norm)
+        fuzz_sort = fuzz.token_sort_ratio(a_norm, b_norm)
+        fuzz_partial = fuzz.partial_ratio(a_norm, b_norm)
+
+        a_set = set(a_tokens)
+        b_set = set(b_tokens)
+        overlap = len(a_set.intersection(b_set))
+        denom = max(1, len(a_set.union(b_set)))
+        jaccard = int((overlap / denom) * 100)
+
+        # Reward overlap in numbers (dates/thresholds often identify the same market).
+        a_nums = {t for t in a_set if t.isdigit()}
+        b_nums = {t for t in b_set if t.isdigit()}
+        num_bonus = 8 if a_nums.intersection(b_nums) else 0
+
+        blended = int(0.45 * fuzz_set + 0.20 * fuzz_sort + 0.15 * fuzz_partial + 0.20 * jaccard + num_bonus)
+        return min(100, max(0, blended))
 
     def match_pairs(self, snapshots: List[MarketSnapshot]) -> List[Tuple[MarketSnapshot, MarketSnapshot, int]]:
         pairs = []
@@ -521,7 +597,7 @@ class ArbitrageEngine:
                 b = snapshots[j]
                 if a.platform == b.platform:
                     continue
-                score = fuzz.token_set_ratio(a.title.lower(), b.title.lower())
+                score = self._blend_match_score(a.title, b.title)
                 if score >= self.match_threshold:
                     pairs.append((a, b, score))
         return pairs
