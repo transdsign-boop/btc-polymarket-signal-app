@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { fetchState, tick } from './api'
+import { fetchBacktestRows, fetchBacktestSummary, fetchState, tick } from './api'
 
 function pct(v) {
   if (typeof v !== 'number' || Number.isNaN(v)) return 'N/A'
@@ -14,6 +14,9 @@ function num(v, d = 2) {
 export default function App() {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
+  const [backtestSummary, setBacktestSummary] = useState(null)
+  const [backtestRows, setBacktestRows] = useState([])
+  const [backtestError, setBacktestError] = useState('')
 
   useEffect(() => {
     let active = true
@@ -37,6 +40,39 @@ export default function App() {
     return () => {
       active = false
       clearInterval(id)
+    }
+  }, [])
+
+  useEffect(() => {
+    let active = true
+
+    const loadBacktest = async () => {
+      try {
+        setBacktestError('')
+        const [summaryRes, rowsRes] = await Promise.all([fetchBacktestSummary(), fetchBacktestRows(12)])
+        if (!active) return
+
+        if (summaryRes?.ok) {
+          setBacktestSummary(summaryRes.summary)
+        } else {
+          setBacktestSummary(null)
+          setBacktestError(summaryRes?.error || 'Backtest summary not available')
+        }
+
+        if (rowsRes?.ok) {
+          setBacktestRows(rowsRes.rows || [])
+        } else {
+          setBacktestRows([])
+          setBacktestError(rowsRes?.error || 'Backtest rows not available')
+        }
+      } catch (e) {
+        if (active) setBacktestError(e.message || 'Backtest request failed')
+      }
+    }
+
+    loadBacktest()
+    return () => {
+      active = false
     }
   }, [])
 
@@ -94,6 +130,65 @@ export default function App() {
           </div>
         </article>
       </section>
+
+      <section className="mt-8">
+        <h2 className="text-xl font-semibold">Backtest Results</h2>
+        <p className="mt-1 text-sm text-slate-400">From backend `backtest_results/backtest_summary.json` and `backtest_rows.csv`.</p>
+      </section>
+
+      {backtestError && !backtestSummary ? (
+        <div className="mt-4 rounded-xl border border-amber-700/40 bg-amber-950/30 p-4 text-amber-200">{backtestError}</div>
+      ) : null}
+
+      {backtestSummary ? (
+        <section className="mt-4 grid gap-4 md:grid-cols-3">
+          <article className="card">
+            <div className="label">Evaluated Rows</div>
+            <div className="value">{num(backtestSummary.rows_evaluated || 0, 0)}</div>
+          </article>
+          <article className="card">
+            <div className="label">Trades / Win Rate</div>
+            <div className="value">{num(backtestSummary.trades || 0, 0)} / {pct(backtestSummary.win_rate)}</div>
+          </article>
+          <article className="card">
+            <div className="label">Cumulative PnL</div>
+            <div className={`value ${(backtestSummary.cum_pnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-300'}`}>
+              {pct(backtestSummary.cum_pnl)}
+            </div>
+          </article>
+        </section>
+      ) : null}
+
+      {backtestRows.length ? (
+        <section className="mt-4 overflow-x-auto rounded-2xl border border-slate-800 bg-panel/60">
+          <table className="min-w-full text-sm">
+            <thead className="bg-slate-900/70 text-slate-300">
+              <tr>
+                <th className="px-3 py-2 text-left">Slug</th>
+                <th className="px-3 py-2 text-left">Model</th>
+                <th className="px-3 py-2 text-left">Market</th>
+                <th className="px-3 py-2 text-left">Edge</th>
+                <th className="px-3 py-2 text-left">Signal</th>
+                <th className="px-3 py-2 text-left">PnL</th>
+              </tr>
+            </thead>
+            <tbody>
+              {backtestRows.map((row) => (
+                <tr key={row.slug} className="border-t border-slate-800">
+                  <td className="px-3 py-2 font-mono text-xs text-slate-300">{row.slug}</td>
+                  <td className="px-3 py-2">{pct(Number(row.model_prob_up))}</td>
+                  <td className="px-3 py-2">{pct(Number(row.market_prob_up))}</td>
+                  <td className="px-3 py-2">{pct(Number(row.edge))}</td>
+                  <td className={`px-3 py-2 ${row.signal === 'TRADE' ? 'text-emerald-400' : 'text-slate-300'}`}>{row.signal}</td>
+                  <td className={`px-3 py-2 ${(Number(row.trade_pnl) || 0) >= 0 ? 'text-emerald-400' : 'text-red-300'}`}>
+                    {pct(Number(row.trade_pnl))}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
     </main>
   )
 }

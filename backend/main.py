@@ -2,7 +2,9 @@ import json
 import math
 import os
 import time
+import csv
 from collections import deque
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -34,6 +36,7 @@ GAMMA_MARKETS_URL = "https://gamma-api.polymarket.com/markets"
 CLOB_MIDPOINT_URL = "https://clob.polymarket.com/midpoint"
 CLOB_PRICE_URL = "https://clob.polymarket.com/price"
 POLYMARKET_API_KEY = os.getenv("POLYMARKET_API_KEY", "").strip()
+BACKTEST_DIR = Path(os.getenv("BACKTEST_DIR", "backtest_results"))
 
 btc_prices: deque[float] = deque(maxlen=60)
 
@@ -317,3 +320,40 @@ def tick() -> Dict[str, Any]:
             "ts": int(time.time()),
             "error": str(exc),
         }
+
+
+@app.get("/backtest/summary")
+def backtest_summary() -> Dict[str, Any]:
+    summary_path = BACKTEST_DIR / "backtest_summary.json"
+    if not summary_path.exists():
+        return {
+            "ok": False,
+            "error": f"Missing {summary_path}. Run backend/backtest.py first.",
+        }
+    try:
+        payload = json.loads(summary_path.read_text())
+        return {"ok": True, "summary": payload}
+    except Exception as exc:
+        return {"ok": False, "error": f"Failed to load summary: {exc}"}
+
+
+@app.get("/backtest/rows")
+def backtest_rows(limit: int = 50) -> Dict[str, Any]:
+    rows_path = BACKTEST_DIR / "backtest_rows.csv"
+    if not rows_path.exists():
+        return {
+            "ok": False,
+            "error": f"Missing {rows_path}. Run backend/backtest.py first.",
+            "rows": [],
+        }
+
+    max_rows = max(1, min(int(limit), 500))
+    rows: List[Dict[str, Any]] = []
+    try:
+        with rows_path.open(newline="") as f:
+            reader = csv.DictReader(f)
+            all_rows = list(reader)
+            rows = all_rows[-max_rows:]
+        return {"ok": True, "rows": rows, "count": len(rows)}
+    except Exception as exc:
+        return {"ok": False, "error": f"Failed to load rows: {exc}", "rows": []}
