@@ -377,6 +377,33 @@ class KalshiClient(BasePredictionMarketClient):
                 headers["KALSHI-ACCESS-SIGNATURE"] = json.dumps({"sig": int.from_bytes(fake[:4], "little", signed=False)})
         return headers
 
+    def _is_comparable_market(self, market_id: str, title: str) -> bool:
+        """Filter out combinator/parlay-style contracts that do not map to single Polymarket events."""
+        mid = market_id.upper()
+        t = title.lower().strip()
+
+        blocked_id_markers = {
+            "MULTIGAME",
+            "SAMEGAME",
+            "PARLAY",
+            "COMBO",
+        }
+        if any(marker in mid for marker in blocked_id_markers):
+            return False
+
+        # Combo titles are usually long comma-separated lists of mini-legs.
+        if t.count(",") >= 2:
+            return False
+
+        # Titles like "yes team, yes team..." are not single-event contracts.
+        if len(re.findall(r"\byes\b", t)) >= 2 or len(re.findall(r"\bno\b", t)) >= 2:
+            return False
+
+        # Keep reasonably question-like single events.
+        if "?" not in t and not t.startswith("will "):
+            return False
+        return True
+
     def get_active_markets(self) -> List[Dict[str, Any]]:
         path = "/markets"
         data = self._request_json("GET", f"{self.base_url}{path}", params={"status": "open", "limit": 200}, headers=self._auth_headers("GET", path))
@@ -388,7 +415,7 @@ class KalshiClient(BasePredictionMarketClient):
                 title = row.get("title") or row.get("subtitle") or row.get("name")
                 market_id = row.get("ticker") or row.get("id") or row.get("market_id")
                 status = str(row.get("status", "")).lower()
-                if title and market_id and status in {"open", "", "active"}:
+                if title and market_id and status in {"open", "", "active"} and self._is_comparable_market(str(market_id), str(title)):
                     out.append({"market_id": str(market_id), "title": str(title), "raw": row})
             if out:
                 return out
