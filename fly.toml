@@ -1,8 +1,11 @@
-app = "prediction-arb-monitor-frontend"
+app = "prediction-arb-monitor"
 primary_region = "iad"
 
 [build]
   dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
 
 [http_service]
   internal_port = 8080
