@@ -364,6 +364,8 @@ class KalshiClient(BasePredictionMarketClient):
         super().__init__("Kalshi", logger, mock_if_unavailable)
         self.base_url = os.getenv("KALSHI_BASE_URL", "https://api.elections.kalshi.com/trade-api/v2")
         self.fallback_base_url = os.getenv("KALSHI_FALLBACK_BASE_URL", "https://api.kalshi.com/trade-api/v2")
+        self.max_pages = max(1, int(os.getenv("KALSHI_MAX_PAGES", "20")))
+        self.allow_combo_fallback = os.getenv("KALSHI_ALLOW_COMBO_FALLBACK", "false").lower() in {"1", "true", "yes"}
         self.key_id = os.getenv("KALSHI_KEY_ID", "").strip()
         self.private_key = os.getenv("KALSHI_PRIVATE_KEY", "").strip()
 
@@ -384,6 +386,7 @@ class KalshiClient(BasePredictionMarketClient):
         t = title.lower().strip()
 
         blocked_id_markers = {
+            "KXMVESPORTSMULTIGAMEEXTENDED",
             "MULTIGAME",
             "SAMEGAME",
             "PARLAY",
@@ -409,26 +412,37 @@ class KalshiClient(BasePredictionMarketClient):
             base_urls.append(self.fallback_base_url)
 
         for base_url in base_urls:
-            data = self._request_json("GET", f"{base_url}{path}", params={"status": "open", "limit": 200}, headers=self._auth_headers("GET", path))
-            time.sleep(KALSHI_SLEEP_BETWEEN_CALLS)
-            if not isinstance(data, dict):
-                continue
-            rows = data.get("markets") or data.get("data") or data.get("results") or []
             out = []
             raw_out = []
-            for row in rows:
-                title = row.get("title") or row.get("subtitle") or row.get("name")
-                market_id = row.get("ticker") or row.get("id") or row.get("market_id")
-                status = str(row.get("status", "")).lower()
-                if not (title and market_id and status in {"open", "", "active"}):
-                    continue
-                entry = {"market_id": str(market_id), "title": str(title), "raw": row, "base_url": base_url}
-                raw_out.append(entry)
-                if self._is_comparable_market(str(market_id), str(title)):
-                    out.append(entry)
+            cursor = None
+            for _ in range(self.max_pages):
+                params = {"status": "open", "limit": 200}
+                if cursor:
+                    params["cursor"] = cursor
+                data = self._request_json("GET", f"{base_url}{path}", params=params, headers=self._auth_headers("GET", path))
+                time.sleep(KALSHI_SLEEP_BETWEEN_CALLS)
+                if not isinstance(data, dict):
+                    break
+                rows = data.get("markets") or data.get("data") or data.get("results") or []
+                if not rows:
+                    break
+                for row in rows:
+                    title = row.get("title") or row.get("subtitle") or row.get("name")
+                    market_id = row.get("ticker") or row.get("id") or row.get("market_id")
+                    status = str(row.get("status", "")).lower()
+                    if not (title and market_id and status in {"open", "", "active"}):
+                        continue
+                    entry = {"market_id": str(market_id), "title": str(title), "raw": row, "base_url": base_url}
+                    raw_out.append(entry)
+                    if self._is_comparable_market(str(market_id), str(title)):
+                        out.append(entry)
+                cursor = data.get("cursor")
+                if not cursor or len(out) >= 200:
+                    break
             if out:
+                self.logger.info("[Kalshi] comparable open markets=%d source=%s", len(out), base_url)
                 return out
-            if raw_out:
+            if raw_out and self.allow_combo_fallback:
                 self.logger.warning("[Kalshi] strict filter returned 0 markets on %s; using unfiltered fallback=%d", base_url, len(raw_out))
                 return raw_out
         if self.mock_if_unavailable:
