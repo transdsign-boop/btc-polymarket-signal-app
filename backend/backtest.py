@@ -248,104 +248,7 @@ def compute_features(prices: List[float]) -> Dict[str, float]:
     mom_3m = float((arr[-1] - arr[-37]) / arr[-37]) if len(arr) >= 37 else 0.0
     returns = np.diff(arr) / arr[:-1]
     vol_5m = float(np.std(returns)) if len(returns) else 0.0
-
-    # RSI over 14 periods.
-    if len(returns) >= 14:
-        gains = np.where(returns > 0, returns, 0.0)
-        losses = np.where(returns < 0, -returns, 0.0)
-        avg_gain = float(np.mean(gains[-14:]))
-        avg_loss = float(np.mean(losses[-14:]))
-        rs = avg_gain / avg_loss if avg_loss > 0 else 100.0
-        rsi_14 = float(100.0 - 100.0 / (1.0 + rs))
-    else:
-        rsi_14 = 50.0
-
-    # Bollinger Band width over 20 periods (normalized).
-    if len(arr) >= 20:
-        sma20 = float(np.mean(arr[-20:]))
-        std20 = float(np.std(arr[-20:]))
-        bb_width = float((2 * std20) / sma20) if sma20 > 0 else 0.0
-    else:
-        bb_width = 0.0
-
-    # Rate of change over 5 periods.
-    roc_5 = float((arr[-1] - arr[-6]) / arr[-6]) if len(arr) >= 6 else 0.0
-
-    # Trend acceleration: mom_1m - mom_3m.
-    mom_accel = mom_1m - mom_3m
-
-    return {
-        "mom_1m": mom_1m,
-        "mom_3m": mom_3m,
-        "vol_5m": vol_5m,
-        "rsi_14": rsi_14,
-        "bb_width": bb_width,
-        "roc_5": roc_5,
-        "mom_accel": mom_accel,
-    }
-
-
-DEFAULT_WEIGHTS: Dict[str, float] = {
-    "mom_1m": 180.0,
-    "mom_3m": 120.0,
-    "vol_5m": -40.0,
-    "rsi_14": 0.0,
-    "bb_width": 0.0,
-    "roc_5": 0.0,
-    "mom_accel": 0.0,
-}
-
-
-def compute_score(features: Dict[str, float], weights: Optional[Dict[str, float]] = None) -> float:
-    w = weights if weights is not None else DEFAULT_WEIGHTS
-    return sum(features.get(k, 0.0) * w.get(k, 0.0) for k in w)
-
-
-WEIGHT_PRESETS: Dict[str, Dict[str, float]] = {
-    "momentum_only": {
-        "mom_1m": 180.0, "mom_3m": 120.0, "vol_5m": -40.0,
-        "rsi_14": 0.0, "bb_width": 0.0, "roc_5": 0.0, "mom_accel": 0.0,
-    },
-}
-
-
-def recompute_rows_with_weights(
-    rows: List[Dict[str, Any]],
-    weights: Dict[str, float],
-    fee_buffer: float,
-) -> List[Dict[str, Any]]:
-    """Re-derive edge and trade_pnl for each row using a different weight set."""
-    out: List[Dict[str, Any]] = []
-    for r in rows:
-        features = {
-            "mom_1m": float(r.get("mom_1m", 0)),
-            "mom_3m": float(r.get("mom_3m", 0)),
-            "vol_5m": float(r.get("vol_5m", 0)),
-            "rsi_14": float(r.get("rsi_14", 50)),
-            "bb_width": float(r.get("bb_width", 0)),
-            "roc_5": float(r.get("roc_5", 0)),
-            "mom_accel": float(r.get("mom_accel", 0)),
-        }
-        score = compute_score(features, weights)
-        model_prob_up = clamp01(sigmoid(score))
-
-        market_prob_up = r.get("market_prob_up")
-        outcome_up = r.get("outcome_up")
-
-        edge = None
-        pnl = 0.0
-        if market_prob_up is not None:
-            edge = model_prob_up - float(market_prob_up) - fee_buffer
-
-        if edge is not None and outcome_up is not None and market_prob_up is not None:
-            pnl = float(outcome_up) - float(market_prob_up) - fee_buffer
-
-        new_row = dict(r)
-        new_row["model_prob_up"] = model_prob_up
-        new_row["edge"] = edge
-        new_row["trade_pnl"] = pnl
-        out.append(new_row)
-    return out
+    return {"mom_1m": mom_1m, "mom_3m": mom_3m, "vol_5m": vol_5m}
 
 
 def classify_regime(features: Dict[str, float]) -> str:
@@ -359,34 +262,20 @@ def classify_regime(features: Dict[str, float]) -> str:
     return "Chop"
 
 
-def apply_signal_rule(
-    row: Dict[str, Any],
-    edge_min: float,
-    max_vol_5m: float,
-    allowed_regimes: Optional[List[str]] = None,
-) -> bool:
+def apply_signal_rule(row: Dict[str, Any], edge_min: float, max_vol_5m: float) -> bool:
     edge = row.get("edge")
     vol = row.get("vol_5m")
     if edge is None or vol is None:
         return False
-    if allowed_regimes is not None:
-        regime = row.get("regime", "")
-        if regime not in allowed_regimes:
-            return False
     return float(edge) > edge_min and float(vol) <= max_vol_5m
 
 
-def trade_metrics(
-    rows: List[Dict[str, Any]],
-    edge_min: float,
-    max_vol_5m: float,
-    allowed_regimes: Optional[List[str]] = None,
-) -> Dict[str, Any]:
+def trade_metrics(rows: List[Dict[str, Any]], edge_min: float, max_vol_5m: float) -> Dict[str, Any]:
     trades: List[Dict[str, Any]] = []
     for r in rows:
         if r.get("market_prob_up") is None or r.get("outcome_up") is None:
             continue
-        if apply_signal_rule(r, edge_min=edge_min, max_vol_5m=max_vol_5m, allowed_regimes=allowed_regimes):
+        if apply_signal_rule(r, edge_min=edge_min, max_vol_5m=max_vol_5m):
             trades.append(r)
 
     wins = [r for r in trades if float(r["outcome_up"]) >= 0.5]
@@ -404,18 +293,6 @@ def trade_metrics(
 
     max_drawdown_pct = (max_drawdown / peak) if peak > 0 else None
 
-    # Sharpe ratio (annualized is meaningless here; use raw mean/std of trade PnLs).
-    if len(pnl_values) >= 2:
-        pnl_std = float(np.std(pnl_values, ddof=1))
-        sharpe = float(np.mean(pnl_values)) / pnl_std if pnl_std > 0 else 0.0
-    else:
-        sharpe = 0.0
-
-    # Profit factor = gross wins / gross losses.
-    gross_wins = sum(p for p in pnl_values if p > 0)
-    gross_losses = abs(sum(p for p in pnl_values if p < 0))
-    profit_factor = (gross_wins / gross_losses) if gross_losses > 0 else (10.0 if gross_wins > 0 else 0.0)
-
     return {
         "trades": len(trades),
         "wins": len(wins),
@@ -423,8 +300,6 @@ def trade_metrics(
         "avg_edge_on_trades": float(np.mean(edges)) if edges else 0.0,
         "avg_pnl_on_trades": float(np.mean(pnl_values)) if pnl_values else 0.0,
         "cum_pnl": float(np.sum(pnl_values)) if pnl_values else 0.0,
-        "sharpe": sharpe,
-        "profit_factor": profit_factor,
         "max_drawdown": float(max_drawdown),
         "max_drawdown_pct": float(max_drawdown_pct) if max_drawdown_pct is not None else None,
     }
@@ -437,7 +312,6 @@ def account_simulation(
     initial_balance: float,
     risk_per_trade: float,
     compounding: bool,
-    allowed_regimes: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     balance = float(initial_balance)
     base_balance = float(initial_balance)
@@ -451,7 +325,7 @@ def account_simulation(
     for row in rows:
         if row.get("market_prob_up") is None or row.get("outcome_up") is None:
             continue
-        if not apply_signal_rule(row, edge_min=edge_min, max_vol_5m=max_vol_5m, allowed_regimes=allowed_regimes):
+        if not apply_signal_rule(row, edge_min=edge_min, max_vol_5m=max_vol_5m):
             continue
 
         trade_pnl = float(row.get("trade_pnl") or 0.0)
@@ -488,48 +362,26 @@ def account_simulation(
     }
 
 
-REGIME_OPTIONS: List[Optional[List[str]]] = [
-    None,
-]
-
-
 def optimize_signal_params(
     train_rows: List[Dict[str, Any]],
     edge_grid: List[float],
     vol_grid: List[float],
     min_trades: int,
-    fee_buffer: float = 0.03,
-) -> Dict[str, Any]:
+) -> Dict[str, float]:
     best = None
-    for preset_name, weights in WEIGHT_PRESETS.items():
-        # Recompute edge/model_prob_up for this weight set.
-        recomputed = recompute_rows_with_weights(train_rows, weights, fee_buffer)
-        for regimes in REGIME_OPTIONS:
-            for edge_min in edge_grid:
-                for max_vol_5m in vol_grid:
-                    m = trade_metrics(recomputed, edge_min=edge_min, max_vol_5m=max_vol_5m, allowed_regimes=regimes)
-                    if m["trades"] < min_trades:
-                        continue
-                    # Profit factor as primary objective — robust for binary
-                    # outcomes, not distorted by sample size like Sharpe/t-stat.
-                    key = (m["profit_factor"], m["win_rate"])
-                    if best is None or key > best["key"]:
-                        best = {
-                            "key": key,
-                            "edge_min": edge_min,
-                            "max_vol_5m": max_vol_5m,
-                            "allowed_regimes": regimes,
-                            "weight_preset": preset_name,
-                        }
+    for edge_min in edge_grid:
+        for max_vol_5m in vol_grid:
+            m = trade_metrics(train_rows, edge_min=edge_min, max_vol_5m=max_vol_5m)
+            if m["trades"] < min_trades:
+                continue
+            # Primary objective: cumulative pnl, tie-break by avg pnl then win rate.
+            key = (m["cum_pnl"], m["avg_pnl_on_trades"], m["win_rate"])
+            if best is None or key > best["key"]:
+                best = {"key": key, "edge_min": edge_min, "max_vol_5m": max_vol_5m}
 
     if best is None:
-        return {"edge_min": 0.11, "max_vol_5m": 0.002, "allowed_regimes": None, "weight_preset": "momentum_only"}
-    return {
-        "edge_min": float(best["edge_min"]),
-        "max_vol_5m": float(best["max_vol_5m"]),
-        "allowed_regimes": best["allowed_regimes"],
-        "weight_preset": best["weight_preset"],
-    }
+        return {"edge_min": 0.11, "max_vol_5m": 0.002}
+    return {"edge_min": float(best["edge_min"]), "max_vol_5m": float(best["max_vol_5m"])}
 
 
 def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Dict[str, Any]:
@@ -544,7 +396,6 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
     initial_balance = float(args.initial_balance)
     risk_per_trade = float(args.risk_per_trade)
     compounding = bool(args.compounding)
-    fee_buffer = float(args.fee_buffer)
 
     if n < train_n + test_n:
         return {
@@ -553,9 +404,8 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
             "eligible_rows": n,
         }
 
-    edge_grid = [i / 100 for i in range(10, 15)]  # 0.10 to 0.14 — tight band around default 0.11
-    vol_grid = [0.0018, 0.0020, 0.0022, 0.0025]
-    use_fixed = bool(getattr(args, "wf_fixed_params", False))
+    edge_grid = [i / 100 for i in range(0, 31)]
+    vol_grid = [0.0015, 0.0018, 0.0020, 0.0022, 0.0025, 0.0030]
     folds: List[Dict[str, Any]] = []
 
     # Cumulative balance that carries across folds.
@@ -564,29 +414,17 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
     start = 0
     while start + train_n + test_n <= n:
         train_rows = eligible[start : start + train_n]
-        test_rows_raw = eligible[start + train_n : start + train_n + test_n]
+        test_rows = eligible[start + train_n : start + train_n + test_n]
 
-        if use_fixed:
-            params = {"edge_min": 0.11, "max_vol_5m": 0.002, "allowed_regimes": None, "weight_preset": "momentum_only"}
-        else:
-            params = optimize_signal_params(
-                train_rows=train_rows,
-                edge_grid=edge_grid,
-                vol_grid=vol_grid,
-                min_trades=min_trades,
-                fee_buffer=fee_buffer,
-            )
+        params = optimize_signal_params(
+            train_rows=train_rows,
+            edge_grid=edge_grid,
+            vol_grid=vol_grid,
+            min_trades=min_trades,
+        )
 
-        ar = params.get("allowed_regimes")
-        preset_name = params.get("weight_preset", "momentum_only")
-        weights = WEIGHT_PRESETS.get(preset_name, DEFAULT_WEIGHTS)
-
-        # Recompute train and test rows with the optimized weight preset.
-        recomp_train = recompute_rows_with_weights(train_rows, weights, fee_buffer)
-        test_rows = recompute_rows_with_weights(test_rows_raw, weights, fee_buffer)
-
-        train_m = trade_metrics(recomp_train, params["edge_min"], params["max_vol_5m"], allowed_regimes=ar)
-        test_m = trade_metrics(test_rows, params["edge_min"], params["max_vol_5m"], allowed_regimes=ar)
+        train_m = trade_metrics(train_rows, params["edge_min"], params["max_vol_5m"])
+        test_m = trade_metrics(test_rows, params["edge_min"], params["max_vol_5m"])
 
         # Collect per-trade PnL values for the test set so the frontend can
         # replay account simulation with user-chosen balance/risk/compounding.
@@ -594,7 +432,7 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
         for r in test_rows:
             if r.get("market_prob_up") is None or r.get("outcome_up") is None:
                 continue
-            if apply_signal_rule(r, edge_min=params["edge_min"], max_vol_5m=params["max_vol_5m"], allowed_regimes=ar):
+            if apply_signal_rule(r, edge_min=params["edge_min"], max_vol_5m=params["max_vol_5m"]):
                 test_trade_pnls.append(float(r.get("trade_pnl") or 0.0))
 
         # Per-fold account sim on test rows (standalone, starting from initial_balance).
@@ -605,7 +443,6 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
             initial_balance=initial_balance,
             risk_per_trade=risk_per_trade,
             compounding=compounding,
-            allowed_regimes=ar,
         )
 
         # Cumulative account sim: start from the carry-forward balance.
@@ -616,7 +453,6 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
             initial_balance=cumulative_balance,
             risk_per_trade=risk_per_trade,
             compounding=compounding,
-            allowed_regimes=ar,
         )
         cumulative_balance = cumulative_account["ending_balance"]
 
@@ -793,7 +629,7 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
             continue
 
         features = compute_features(series)
-        score = compute_score(features)
+        score = features["mom_1m"] * 180 + features["mom_3m"] * 120 - features["vol_5m"] * 40
         model_prob_up = clamp01(sigmoid(score))
         regime = classify_regime(features)
 
@@ -826,10 +662,6 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
             "mom_1m": features["mom_1m"],
             "mom_3m": features["mom_3m"],
             "vol_5m": features["vol_5m"],
-            "rsi_14": features["rsi_14"],
-            "bb_width": features["bb_width"],
-            "roc_5": features["roc_5"],
-            "mom_accel": features["mom_accel"],
             "regime": regime,
             "model_prob_up": model_prob_up,
             "market_prob_up": market_prob_up,
@@ -953,9 +785,7 @@ def parse_args() -> argparse.Namespace:
     parser.set_defaults(walk_forward=True)
     parser.add_argument("--wf-train-rows", type=int, default=600)
     parser.add_argument("--wf-test-rows", type=int, default=120)
-    parser.add_argument("--wf-min-trades", type=int, default=30)
-    parser.add_argument("--wf-fixed-params", action="store_true", default=False,
-                        help="Use fixed default params in walk-forward (no optimization).")
+    parser.add_argument("--wf-min-trades", type=int, default=20)
     args = parser.parse_args()
 
     if args.include_open:

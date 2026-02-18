@@ -42,12 +42,6 @@ POLYMARKET_API_KEY = os.getenv("POLYMARKET_API_KEY", "").strip()
 BACKTEST_DIR = Path(os.getenv("BACKTEST_DIR", "backtest_results"))
 SIGNAL_EDGE_MIN = float(os.getenv("SIGNAL_EDGE_MIN", "0.11"))
 SIGNAL_MAX_VOL_5M = float(os.getenv("SIGNAL_MAX_VOL_5M", "0.002"))
-_raw_regimes = os.getenv("SIGNAL_ALLOWED_REGIMES", "").strip()
-SIGNAL_ALLOWED_REGIMES: Optional[List[str]] = (
-    [r.strip() for r in _raw_regimes.split(",") if r.strip()] if _raw_regimes else None
-)
-
-SIGNAL_WEIGHT_PRESET = os.getenv("SIGNAL_WEIGHT_PRESET", "momentum_only").strip()
 
 btc_prices: deque[float] = deque(maxlen=60)
 
@@ -55,7 +49,7 @@ latest_state: Dict[str, Any] = {
     "ok": False,
     "ts": int(time.time()),
     "btc_price": None,
-    "features": {"mom_1m": 0.0, "mom_3m": 0.0, "vol_5m": 0.0, "rsi_14": 50.0, "bb_width": 0.0, "roc_5": 0.0, "mom_accel": 0.0},
+    "features": {"mom_1m": 0.0, "mom_3m": 0.0, "vol_5m": 0.0},
     "regime": "Chop",
     "model_prob_up": 0.5,
     "polymarket": {
@@ -169,7 +163,7 @@ def fetch_btc_price() -> float:
 
 def compute_features(prices: List[float]) -> Dict[str, float]:
     if not prices:
-        return {"mom_1m": 0.0, "mom_3m": 0.0, "vol_5m": 0.0, "rsi_14": 50.0, "bb_width": 0.0, "roc_5": 0.0, "mom_accel": 0.0}
+        return {"mom_1m": 0.0, "mom_3m": 0.0, "vol_5m": 0.0}
 
     arr = np.array(prices, dtype=float)
 
@@ -187,68 +181,9 @@ def compute_features(prices: List[float]) -> Dict[str, float]:
         returns = np.diff(arr) / arr[:-1]
         vol_5m = float(np.std(returns))
     else:
-        returns = np.array([])
         vol_5m = 0.0
 
-    # RSI over 14 periods.
-    if len(returns) >= 14:
-        gains = np.where(returns > 0, returns, 0.0)
-        losses = np.where(returns < 0, -returns, 0.0)
-        avg_gain = float(np.mean(gains[-14:]))
-        avg_loss = float(np.mean(losses[-14:]))
-        rs = avg_gain / avg_loss if avg_loss > 0 else 100.0
-        rsi_14 = float(100.0 - 100.0 / (1.0 + rs))
-    else:
-        rsi_14 = 50.0
-
-    # Bollinger Band width over 20 periods (normalized).
-    if len(arr) >= 20:
-        sma20 = float(np.mean(arr[-20:]))
-        std20 = float(np.std(arr[-20:]))
-        bb_width = float((2 * std20) / sma20) if sma20 > 0 else 0.0
-    else:
-        bb_width = 0.0
-
-    # Rate of change over 5 periods.
-    roc_5 = float((arr[-1] - arr[-6]) / arr[-6]) if len(arr) >= 6 else 0.0
-
-    # Trend acceleration.
-    mom_accel = mom_1m - mom_3m
-
-    return {
-        "mom_1m": mom_1m,
-        "mom_3m": mom_3m,
-        "vol_5m": vol_5m,
-        "rsi_14": rsi_14,
-        "bb_width": bb_width,
-        "roc_5": roc_5,
-        "mom_accel": mom_accel,
-    }
-
-
-DEFAULT_WEIGHTS: Dict[str, float] = {
-    "mom_1m": 180.0,
-    "mom_3m": 120.0,
-    "vol_5m": -40.0,
-    "rsi_14": 0.0,
-    "bb_width": 0.0,
-    "roc_5": 0.0,
-    "mom_accel": 0.0,
-}
-
-
-def compute_score(features: Dict[str, float], weights: Optional[Dict[str, float]] = None) -> float:
-    w = weights if weights is not None else DEFAULT_WEIGHTS
-    return sum(features.get(k, 0.0) * w.get(k, 0.0) for k in w)
-
-
-WEIGHT_PRESETS: Dict[str, Dict[str, float]] = {
-    "momentum_only": {
-        "mom_1m": 180.0, "mom_3m": 120.0, "vol_5m": -40.0,
-        "rsi_14": 0.0, "bb_width": 0.0, "roc_5": 0.0, "mom_accel": 0.0,
-    },
-}
-ACTIVE_WEIGHTS = WEIGHT_PRESETS.get(SIGNAL_WEIGHT_PRESET, DEFAULT_WEIGHTS)
+    return {"mom_1m": mom_1m, "mom_3m": mom_3m, "vol_5m": vol_5m}
 
 
 def classify_regime(features: Dict[str, float]) -> str:
@@ -341,7 +276,7 @@ def compute_state() -> Dict[str, Any]:
     btc_prices.append(btc_price)
 
     features = compute_features(list(btc_prices))
-    score = compute_score(features, ACTIVE_WEIGHTS)
+    score = features["mom_1m"] * 180 + features["mom_3m"] * 120 - features["vol_5m"] * 40
     model_prob_up = _clamp01(_sigmoid(score))
     regime = classify_regime(features)
 
@@ -352,9 +287,7 @@ def compute_state() -> Dict[str, Any]:
     signal = "SKIP"
     if market_prob_up is not None:
         edge = float(model_prob_up - market_prob_up - fee_buffer)
-        passes_edge_vol = edge > SIGNAL_EDGE_MIN and features["vol_5m"] <= SIGNAL_MAX_VOL_5M
-        passes_regime = SIGNAL_ALLOWED_REGIMES is None or regime in SIGNAL_ALLOWED_REGIMES
-        signal = "TRADE" if (passes_edge_vol and passes_regime) else "SKIP"
+        signal = "TRADE" if (edge > SIGNAL_EDGE_MIN and features["vol_5m"] <= SIGNAL_MAX_VOL_5M) else "SKIP"
 
     latest_state = {
         "ok": True,
@@ -368,8 +301,6 @@ def compute_state() -> Dict[str, Any]:
         "signal_params": {
             "edge_min": SIGNAL_EDGE_MIN,
             "max_vol_5m": SIGNAL_MAX_VOL_5M,
-            "allowed_regimes": SIGNAL_ALLOWED_REGIMES,
-            "weight_preset": SIGNAL_WEIGHT_PRESET,
         },
         "edge": edge,
         "signal": signal,

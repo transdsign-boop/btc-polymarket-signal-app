@@ -226,31 +226,6 @@ export default function App() {
         </article>
       </section>
 
-      <section className="mt-4 grid gap-4 md:grid-cols-4">
-        <article className="card">
-          <div className="label">RSI (14)</div>
-          <div className={`value ${(data?.features?.rsi_14 ?? 50) > 70 ? 'text-red-300' : (data?.features?.rsi_14 ?? 50) < 30 ? 'text-emerald-400' : 'text-slate-200'}`}>
-            {num(data?.features?.rsi_14, 1)}
-          </div>
-        </article>
-        <article className="card">
-          <div className="label">BB Width</div>
-          <div className="value">{num(data?.features?.bb_width, 5)}</div>
-        </article>
-        <article className="card">
-          <div className="label">ROC (5)</div>
-          <div className={`value ${(data?.features?.roc_5 ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-300'}`}>
-            {pct(data?.features?.roc_5)}
-          </div>
-        </article>
-        <article className="card">
-          <div className="label">Mom Accel</div>
-          <div className={`value ${(data?.features?.mom_accel ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-300'}`}>
-            {pct(data?.features?.mom_accel)}
-          </div>
-        </article>
-      </section>
-
       <section className="mt-8">
         <h2 className="text-xl font-semibold">Backtest Results</h2>
         <p className="mt-1 text-sm text-slate-400">Showing all rows where signal = TRADE from backend backtest files.</p>
@@ -323,39 +298,6 @@ export default function App() {
                   {usd(wfSimResult.max_drawdown)} {wfSimResult.max_drawdown_pct != null ? `(${pct(wfSimResult.max_drawdown_pct)})` : ''}
                 </div>
               </article>
-            </section>
-          ) : null}
-
-          {backtestSummary.walk_forward.folds?.length ? (
-            <section className="mt-4 overflow-x-auto rounded-2xl border border-slate-800 bg-panel/60">
-              <table className="min-w-full text-sm">
-                <thead className="bg-slate-900/70 text-slate-300">
-                  <tr>
-                    <th className="px-3 py-2 text-left">Fold</th>
-                    <th className="px-3 py-2 text-left">Weight Preset</th>
-                    <th className="px-3 py-2 text-left">Regimes</th>
-                    <th className="px-3 py-2 text-left">Edge Min</th>
-                    <th className="px-3 py-2 text-left">Test Trades</th>
-                    <th className="px-3 py-2 text-left">Test Win Rate</th>
-                    <th className="px-3 py-2 text-left">Test Cum PnL</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {backtestSummary.walk_forward.folds.map((fold, i) => (
-                    <tr key={i} className="border-t border-slate-800">
-                      <td className="px-3 py-2 font-mono text-xs text-slate-300">{i + 1}</td>
-                      <td className="px-3 py-2 font-mono text-xs text-cyan-300">{fold.params?.weight_preset || 'default'}</td>
-                      <td className="px-3 py-2 text-xs text-slate-300">{fold.params?.allowed_regimes ? fold.params.allowed_regimes.join(', ') : 'All'}</td>
-                      <td className="px-3 py-2">{num(fold.params?.edge_min, 2)}</td>
-                      <td className="px-3 py-2">{num(fold.test?.trades || 0, 0)}</td>
-                      <td className="px-3 py-2">{pct(fold.test?.win_rate)}</td>
-                      <td className={`px-3 py-2 ${(fold.test?.cum_pnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-300'}`}>
-                        {pct(fold.test?.cum_pnl)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
             </section>
           ) : null}
         </>
