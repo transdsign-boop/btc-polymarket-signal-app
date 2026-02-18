@@ -415,14 +415,22 @@ class KalshiClient(BasePredictionMarketClient):
                 continue
             rows = data.get("markets") or data.get("data") or data.get("results") or []
             out = []
+            raw_out = []
             for row in rows:
                 title = row.get("title") or row.get("subtitle") or row.get("name")
                 market_id = row.get("ticker") or row.get("id") or row.get("market_id")
                 status = str(row.get("status", "")).lower()
-                if title and market_id and status in {"open", "", "active"} and self._is_comparable_market(str(market_id), str(title)):
-                    out.append({"market_id": str(market_id), "title": str(title), "raw": row, "base_url": base_url})
+                if not (title and market_id and status in {"open", "", "active"}):
+                    continue
+                entry = {"market_id": str(market_id), "title": str(title), "raw": row, "base_url": base_url}
+                raw_out.append(entry)
+                if self._is_comparable_market(str(market_id), str(title)):
+                    out.append(entry)
             if out:
                 return out
+            if raw_out:
+                self.logger.warning("[Kalshi] strict filter returned 0 markets on %s; using unfiltered fallback=%d", base_url, len(raw_out))
+                return raw_out
         if self.mock_if_unavailable:
             return self._mock_markets()
         return []
