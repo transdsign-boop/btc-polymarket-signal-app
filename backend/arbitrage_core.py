@@ -856,6 +856,8 @@ class ArbMonitorService:
         self.logger = logger
         self.enable_email_alerts = enable_email_alerts
         self.max_markets_per_platform = max(10, int(max_markets_per_platform))
+        focus_raw = os.getenv("MARKET_FOCUS_KEYWORDS", "").strip()
+        self.manual_focus_keywords = [x.strip().lower() for x in focus_raw.split(",") if x.strip()]
         self.running = False
         self.thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
@@ -869,6 +871,7 @@ class ArbMonitorService:
             "pairs_total": 0,
             "opportunities_total": 0,
             "mock_data_detected": False,
+            "overlap_tokens": [],
         }
 
     def _coarse_market_features(self, market: Dict[str, Any]) -> Dict[str, Any]:
@@ -952,6 +955,70 @@ class ArbMonitorService:
         remainder = [m for score, _, m in ranked if score < 70]
         return strong + remainder
 
+    def _derive_overlap_tokens(self, markets_by_client: Dict[str, List[Dict[str, Any]]], top_n: int = 8) -> List[str]:
+        if self.manual_focus_keywords:
+            return self.manual_focus_keywords[:top_n]
+        if len(markets_by_client) < 2:
+            return []
+
+        token_counts: Dict[str, Dict[str, int]] = {}
+        generic = {
+            "yes",
+            "no",
+            "win",
+            "wins",
+            "over",
+            "under",
+            "points",
+            "scored",
+            "team",
+            "game",
+            "market",
+            "will",
+            "by",
+        }
+        for client_name, markets in markets_by_client.items():
+            counts: Dict[str, int] = {}
+            for m in markets[:300]:
+                _, tokens = self.engine._normalize_title(str(m.get("title", "")))
+                seen = set(tokens)
+                for t in seen:
+                    if t in generic or len(t) < 4 or t.isdigit():
+                        continue
+                    counts[t] = counts.get(t, 0) + 1
+            token_counts[client_name] = counts
+
+        client_names = list(token_counts.keys())
+        shared = set(token_counts[client_names[0]].keys())
+        for name in client_names[1:]:
+            shared &= set(token_counts[name].keys())
+        if not shared:
+            return []
+
+        ranked: List[Tuple[int, str]] = []
+        for token in shared:
+            score = 1
+            for name in client_names:
+                score *= max(1, token_counts[name].get(token, 0))
+            ranked.append((score, token))
+        ranked.sort(reverse=True)
+        return [t for _, t in ranked[:top_n]]
+
+    def _focus_markets_by_overlap(self, markets: List[Dict[str, Any]], overlap_tokens: List[str]) -> List[Dict[str, Any]]:
+        if not markets or not overlap_tokens:
+            return markets
+
+        overlap_set = set(overlap_tokens)
+        scored: List[Tuple[int, float, Dict[str, Any]]] = []
+        for m in markets:
+            _, tokens = self.engine._normalize_title(str(m.get("title", "")))
+            token_set = set(tokens)
+            hits = len(token_set.intersection(overlap_set))
+            liq = self._market_liquidity_hint(m)
+            scored.append((hits, liq, m))
+        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        return [m for _, _, m in scored]
+
     def run_cycle(self) -> List[Dict[str, Any]]:
         snapshots: List[MarketSnapshot] = []
         snapshots_mock = 0
@@ -964,13 +1031,18 @@ class ArbMonitorService:
             client_lookup[client.name] = client
             self.logger.info("[%s] active markets=%d", client.name, len(markets))
 
+        overlap_tokens = self._derive_overlap_tokens(markets_by_client, top_n=8)
+        if overlap_tokens:
+            self.logger.info("focus overlap tokens=%s", ",".join(overlap_tokens))
+
         for client_name, markets in markets_by_client.items():
             client = client_lookup[client_name]
+            markets = self._focus_markets_by_overlap(markets, overlap_tokens)
             other_markets: List[Dict[str, Any]] = []
             for other_client_name, other_list in markets_by_client.items():
                 if other_client_name == client_name:
                     continue
-                other_markets.extend(other_list)
+                other_markets.extend(self._focus_markets_by_overlap(other_list, overlap_tokens))
 
             prioritized = self._prioritize_markets_for_cross_platform(markets, other_markets)
             for market in prioritized[: self.max_markets_per_platform]:
@@ -1076,6 +1148,7 @@ class ArbMonitorService:
             "pairs_total": len(pairs),
             "opportunities_total": len(serializable),
             "mock_data_detected": snapshots_mock > 0,
+            "overlap_tokens": overlap_tokens,
         }
         self.logger.info("cycle done: snapshots=%d pairs=%d opportunities=%d", len(snapshots), len(pairs), len(serializable))
         return serializable
