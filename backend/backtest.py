@@ -698,7 +698,19 @@ def parse_args() -> argparse.Namespace:
         help="Use fixed notional per trade based on initial balance.",
     )
     parser.set_defaults(compounding=True)
-    parser.add_argument("--walk-forward", action="store_true", help="Run walk-forward validation and include it in summary")
+    parser.add_argument(
+        "--walk-forward",
+        dest="walk_forward",
+        action="store_true",
+        help="Run walk-forward validation and include it in summary.",
+    )
+    parser.add_argument(
+        "--no-walk-forward",
+        dest="walk_forward",
+        action="store_false",
+        help="Skip walk-forward validation.",
+    )
+    parser.set_defaults(walk_forward=True)
     parser.add_argument("--wf-train-rows", type=int, default=600)
     parser.add_argument("--wf-test-rows", type=int, default=120)
     parser.add_argument("--wf-min-trades", type=int, default=20)
