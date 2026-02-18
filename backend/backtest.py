@@ -310,10 +310,6 @@ WEIGHT_PRESETS: Dict[str, Dict[str, float]] = {
         "mom_1m": 160.0, "mom_3m": 100.0, "vol_5m": -40.0,
         "rsi_14": 0.06, "bb_width": 0.0, "roc_5": 0.0, "mom_accel": 0.0,
     },
-    "momentum_plus": {
-        "mom_1m": 150.0, "mom_3m": 100.0, "vol_5m": -50.0,
-        "rsi_14": 0.04, "bb_width": -200.0, "roc_5": 50.0, "mom_accel": 25.0,
-    },
 }
 
 
@@ -519,11 +515,9 @@ def optimize_signal_params(
                     m = trade_metrics(recomputed, edge_min=edge_min, max_vol_5m=max_vol_5m, allowed_regimes=regimes)
                     if m["trades"] < min_trades:
                         continue
-                    # t-statistic: Sharpe * sqrt(n). Naturally balances consistency
-                    # and sample size — penalizes both noisy small samples AND
-                    # large samples with no edge.
-                    t_stat = m["sharpe"] * math.sqrt(m["trades"])
-                    key = (t_stat, m["profit_factor"], m["win_rate"])
+                    # Profit factor as primary objective — robust for binary
+                    # outcomes, not distorted by sample size like Sharpe/t-stat.
+                    key = (m["profit_factor"], m["win_rate"])
                     if best is None or key > best["key"]:
                         best = {
                             "key": key,
@@ -564,8 +558,8 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
             "eligible_rows": n,
         }
 
-    edge_grid = [i / 100 for i in range(5, 19)]  # 0.05 to 0.18 — floor prevents noise, cap prevents over-selectivity
-    vol_grid = [0.0015, 0.0018, 0.0020, 0.0022, 0.0025, 0.0030, 0.0035]
+    edge_grid = [i / 100 for i in range(8, 16)]  # 0.08 to 0.15 — tight band around default 0.11
+    vol_grid = [0.0018, 0.0020, 0.0022, 0.0025, 0.0030]
     folds: List[Dict[str, Any]] = []
 
     # Cumulative balance that carries across folds.
