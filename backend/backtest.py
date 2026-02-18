@@ -305,6 +305,63 @@ def trade_metrics(rows: List[Dict[str, Any]], edge_min: float, max_vol_5m: float
     }
 
 
+def account_simulation(
+    rows: List[Dict[str, Any]],
+    edge_min: float,
+    max_vol_5m: float,
+    initial_balance: float,
+    risk_per_trade: float,
+    compounding: bool,
+) -> Dict[str, Any]:
+    balance = float(initial_balance)
+    base_balance = float(initial_balance)
+    r = max(0.0, min(float(risk_per_trade), 1.0))
+    trades = 0
+    wins = 0
+
+    peak = balance
+    max_drawdown = 0.0
+
+    for row in rows:
+        if row.get("market_prob_up") is None or row.get("outcome_up") is None:
+            continue
+        if not apply_signal_rule(row, edge_min=edge_min, max_vol_5m=max_vol_5m):
+            continue
+
+        trade_pnl = float(row.get("trade_pnl") or 0.0)
+        stake = (balance if compounding else base_balance) * r
+        stake = max(0.0, min(stake, balance))
+        pnl_usd = stake * trade_pnl
+        balance += pnl_usd
+        trades += 1
+        if trade_pnl >= 0:
+            wins += 1
+
+        peak = max(peak, balance)
+        max_drawdown = max(max_drawdown, peak - balance)
+        if balance <= 0:
+            balance = 0.0
+            break
+
+    net_pnl = balance - base_balance
+    roi = (net_pnl / base_balance) if base_balance > 0 else 0.0
+    max_drawdown_pct = (max_drawdown / peak) if peak > 0 else None
+
+    return {
+        "initial_balance": base_balance,
+        "ending_balance": balance,
+        "net_pnl": net_pnl,
+        "roi": roi,
+        "trades": trades,
+        "wins": wins,
+        "win_rate": (wins / trades) if trades else 0.0,
+        "risk_per_trade": r,
+        "compounding": compounding,
+        "max_drawdown": max_drawdown,
+        "max_drawdown_pct": float(max_drawdown_pct) if max_drawdown_pct is not None else None,
+    }
+
+
 def optimize_signal_params(
     train_rows: List[Dict[str, Any]],
     edge_grid: List[float],
@@ -404,6 +461,10 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
     fee_buffer = float(args.fee_buffer)
     signal_edge_min = float(args.signal_edge_min)
     signal_max_vol_5m = float(args.signal_max_vol_5m)
+    min_market_volume = float(args.min_market_volume)
+    initial_balance = float(args.initial_balance)
+    risk_per_trade = float(args.risk_per_trade)
+    compounding = bool(args.compounding)
     api_key = os.getenv("POLYMARKET_API_KEY", "").strip()
     http = HTTP(api_key=api_key)
 
@@ -474,6 +535,12 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
         if not market:
             continue
 
+        market_volume = safe_float(market.get("volumeNum"))
+        if market_volume is None:
+            market_volume = safe_float(market.get("volume"))
+        if market_volume is None:
+            market_volume = 0.0
+
         token_id, outcome_up = pick_up_token_and_outcome(market)
         if not token_id:
             continue
@@ -503,6 +570,10 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
             edge = model_prob_up - market_prob_up - fee_buffer
             signal = "TRADE" if (edge > signal_edge_min and features["vol_5m"] <= signal_max_vol_5m) else "SKIP"
 
+        # Keep only markets with usable pricing and actual traded volume.
+        if market_prob_up is None or market_volume <= min_market_volume:
+            continue
+
         if signal == "TRADE" and outcome_up is not None and market_prob_up is not None:
             # Buy YES at implied probability, then settle to 1/0, minus fee buffer.
             pnl = float(outcome_up - market_prob_up - fee_buffer)
@@ -522,6 +593,7 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
             "regime": regime,
             "model_prob_up": model_prob_up,
             "market_prob_up": market_prob_up,
+            "market_volume": market_volume,
             "fee_buffer": fee_buffer,
             "edge": edge,
             "signal": signal,
@@ -539,6 +611,14 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
             writer.writerows(rows)
 
     trade_summary = trade_metrics(rows, edge_min=signal_edge_min, max_vol_5m=signal_max_vol_5m)
+    account_summary = account_simulation(
+        rows,
+        edge_min=signal_edge_min,
+        max_vol_5m=signal_max_vol_5m,
+        initial_balance=initial_balance,
+        risk_per_trade=risk_per_trade,
+        compounding=compounding,
+    )
 
     summary = {
         "series_slug": SERIES_SLUG,
@@ -562,6 +642,11 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
         "signal_params": {
             "edge_min": signal_edge_min,
             "max_vol_5m": signal_max_vol_5m,
+        },
+        "account_sim": account_summary,
+        "filters": {
+            "require_market_prob": True,
+            "min_market_volume": min_market_volume,
         },
     }
 
@@ -588,6 +673,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-events", type=int, default=0, help="If >0, backtest only the most recent N events")
     parser.add_argument("--signal-edge-min", type=float, default=float(os.getenv("SIGNAL_EDGE_MIN", "0.11")))
     parser.add_argument("--signal-max-vol-5m", type=float, default=float(os.getenv("SIGNAL_MAX_VOL_5M", "0.002")))
+    parser.add_argument(
+        "--min-market-volume",
+        type=float,
+        default=float(os.getenv("MIN_MARKET_VOLUME", "0")),
+        help="Only include rows where market volume is strictly greater than this value.",
+    )
+    parser.add_argument(
+        "--initial-balance",
+        type=float,
+        default=float(os.getenv("INITIAL_BALANCE", "10000")),
+        help="Starting account value for simulated balance curve.",
+    )
+    parser.add_argument(
+        "--risk-per-trade",
+        type=float,
+        default=float(os.getenv("RISK_PER_TRADE", "0.02")),
+        help="Fraction of account (or base balance if no-compounding) allocated per trade.",
+    )
+    parser.add_argument(
+        "--no-compounding",
+        dest="compounding",
+        action="store_false",
+        help="Use fixed notional per trade based on initial balance.",
+    )
+    parser.set_defaults(compounding=True)
     parser.add_argument("--walk-forward", action="store_true", help="Run walk-forward validation and include it in summary")
     parser.add_argument("--wf-train-rows", type=int, default=600)
     parser.add_argument("--wf-test-rows", type=int, default=120)

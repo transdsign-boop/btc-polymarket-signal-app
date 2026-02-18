@@ -11,6 +11,11 @@ function num(v, d = 2) {
   return v.toFixed(d)
 }
 
+function usd(v) {
+  if (typeof v !== 'number' || Number.isNaN(v)) return 'N/A'
+  return `$${v.toFixed(2)}`
+}
+
 export default function App() {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
@@ -179,6 +184,29 @@ export default function App() {
             <div className="label">WF Test Cum PnL</div>
             <div className={`value ${(backtestSummary.walk_forward.aggregate_test?.cum_pnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-300'}`}>
               {pct(backtestSummary.walk_forward.aggregate_test?.cum_pnl)}
+            </div>
+          </article>
+        </section>
+      ) : null}
+
+      {backtestSummary?.account_sim ? (
+        <section className="mt-4 grid gap-4 md:grid-cols-3">
+          <article className="card">
+            <div className="label">Sim Balance (Start - End)</div>
+            <div className="value">
+              {usd(backtestSummary.account_sim.initial_balance)} - {usd(backtestSummary.account_sim.ending_balance)}
+            </div>
+          </article>
+          <article className="card">
+            <div className="label">Sim Net PnL / ROI</div>
+            <div className={`value ${(backtestSummary.account_sim.net_pnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-300'}`}>
+              {usd(backtestSummary.account_sim.net_pnl)} / {pct(backtestSummary.account_sim.roi)}
+            </div>
+          </article>
+          <article className="card">
+            <div className="label">Sim Max Drawdown</div>
+            <div className="value text-red-300">
+              {usd(backtestSummary.account_sim.max_drawdown)} {backtestSummary.account_sim.max_drawdown_pct != null ? `(${pct(backtestSummary.account_sim.max_drawdown_pct)})` : ''}
             </div>
           </article>
         </section>
