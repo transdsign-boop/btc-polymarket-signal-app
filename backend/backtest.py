@@ -306,10 +306,6 @@ WEIGHT_PRESETS: Dict[str, Dict[str, float]] = {
         "mom_1m": 180.0, "mom_3m": 120.0, "vol_5m": -40.0,
         "rsi_14": 0.0, "bb_width": 0.0, "roc_5": 0.0, "mom_accel": 0.0,
     },
-    "momentum_rsi": {
-        "mom_1m": 160.0, "mom_3m": 100.0, "vol_5m": -40.0,
-        "rsi_14": 0.06, "bb_width": 0.0, "roc_5": 0.0, "mom_accel": 0.0,
-    },
 }
 
 
@@ -494,7 +490,6 @@ def account_simulation(
 
 REGIME_OPTIONS: List[Optional[List[str]]] = [
     None,
-    ["Trend", "Chop"],
 ]
 
 
@@ -558,8 +553,8 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
             "eligible_rows": n,
         }
 
-    edge_grid = [i / 100 for i in range(8, 16)]  # 0.08 to 0.15 — tight band around default 0.11
-    vol_grid = [0.0018, 0.0020, 0.0022, 0.0025, 0.0030]
+    edge_grid = [i / 100 for i in range(10, 15)]  # 0.10 to 0.14 — tight band around default 0.11
+    vol_grid = [0.0018, 0.0020, 0.0022, 0.0025]
     folds: List[Dict[str, Any]] = []
 
     # Cumulative balance that carries across folds.

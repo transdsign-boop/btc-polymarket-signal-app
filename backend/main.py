@@ -247,10 +247,6 @@ WEIGHT_PRESETS: Dict[str, Dict[str, float]] = {
         "mom_1m": 180.0, "mom_3m": 120.0, "vol_5m": -40.0,
         "rsi_14": 0.0, "bb_width": 0.0, "roc_5": 0.0, "mom_accel": 0.0,
     },
-    "momentum_rsi": {
-        "mom_1m": 160.0, "mom_3m": 100.0, "vol_5m": -40.0,
-        "rsi_14": 0.06, "bb_width": 0.0, "roc_5": 0.0, "mom_accel": 0.0,
-    },
 }
 ACTIVE_WEIGHTS = WEIGHT_PRESETS.get(SIGNAL_WEIGHT_PRESET, DEFAULT_WEIGHTS)
 
