@@ -363,6 +363,7 @@ class KalshiClient(BasePredictionMarketClient):
     def __init__(self, logger: logging.Logger, mock_if_unavailable: bool = True):
         super().__init__("Kalshi", logger, mock_if_unavailable)
         self.base_url = os.getenv("KALSHI_BASE_URL", "https://api.elections.kalshi.com/trade-api/v2")
+        self.fallback_base_url = os.getenv("KALSHI_FALLBACK_BASE_URL", "https://api.kalshi.com/trade-api/v2")
         self.key_id = os.getenv("KALSHI_KEY_ID", "").strip()
         self.private_key = os.getenv("KALSHI_PRIVATE_KEY", "").strip()
 
@@ -403,9 +404,15 @@ class KalshiClient(BasePredictionMarketClient):
 
     def get_active_markets(self) -> List[Dict[str, Any]]:
         path = "/markets"
-        data = self._request_json("GET", f"{self.base_url}{path}", params={"status": "open", "limit": 200}, headers=self._auth_headers("GET", path))
-        time.sleep(KALSHI_SLEEP_BETWEEN_CALLS)
-        if isinstance(data, dict):
+        base_urls = [self.base_url]
+        if self.fallback_base_url and self.fallback_base_url not in base_urls:
+            base_urls.append(self.fallback_base_url)
+
+        for base_url in base_urls:
+            data = self._request_json("GET", f"{base_url}{path}", params={"status": "open", "limit": 200}, headers=self._auth_headers("GET", path))
+            time.sleep(KALSHI_SLEEP_BETWEEN_CALLS)
+            if not isinstance(data, dict):
+                continue
             rows = data.get("markets") or data.get("data") or data.get("results") or []
             out = []
             for row in rows:
@@ -413,7 +420,7 @@ class KalshiClient(BasePredictionMarketClient):
                 market_id = row.get("ticker") or row.get("id") or row.get("market_id")
                 status = str(row.get("status", "")).lower()
                 if title and market_id and status in {"open", "", "active"} and self._is_comparable_market(str(market_id), str(title)):
-                    out.append({"market_id": str(market_id), "title": str(title), "raw": row})
+                    out.append({"market_id": str(market_id), "title": str(title), "raw": row, "base_url": base_url})
             if out:
                 return out
         if self.mock_if_unavailable:
@@ -423,10 +430,11 @@ class KalshiClient(BasePredictionMarketClient):
     def get_snapshot(self, market: Dict[str, Any]) -> Optional[MarketSnapshot]:
         market_id = market["market_id"]
         title = market["title"]
+        base_url = str(market.get("base_url") or self.base_url)
         ts = pd.Timestamp.utcnow().tz_localize(None)
 
         path = f"/markets/{market_id}"
-        data = self._request_json("GET", f"{self.base_url}{path}", headers=self._auth_headers("GET", path))
+        data = self._request_json("GET", f"{base_url}{path}", headers=self._auth_headers("GET", path))
         time.sleep(KALSHI_SLEEP_BETWEEN_CALLS)
         if isinstance(data, dict):
             row = data.get("market") or data.get("data") or data
@@ -439,7 +447,7 @@ class KalshiClient(BasePredictionMarketClient):
                 return MarketSnapshot(self.name, market_id, title, float(yes), float(no), float(liq), ts, {"source": "rest"})
 
         path2 = f"/markets/{market_id}/orderbook"
-        book = self._request_json("GET", f"{self.base_url}{path2}", headers=self._auth_headers("GET", path2))
+        book = self._request_json("GET", f"{base_url}{path2}", headers=self._auth_headers("GET", path2))
         time.sleep(KALSHI_SLEEP_BETWEEN_CALLS)
         if isinstance(book, dict):
             yes_asks = book.get("yes_asks") or []
