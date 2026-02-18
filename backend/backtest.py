@@ -426,6 +426,15 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
         train_m = trade_metrics(train_rows, params["edge_min"], params["max_vol_5m"])
         test_m = trade_metrics(test_rows, params["edge_min"], params["max_vol_5m"])
 
+        # Collect per-trade PnL values for the test set so the frontend can
+        # replay account simulation with user-chosen balance/risk/compounding.
+        test_trade_pnls: List[float] = []
+        for r in test_rows:
+            if r.get("market_prob_up") is None or r.get("outcome_up") is None:
+                continue
+            if apply_signal_rule(r, edge_min=params["edge_min"], max_vol_5m=params["max_vol_5m"]):
+                test_trade_pnls.append(float(r.get("trade_pnl") or 0.0))
+
         # Per-fold account sim on test rows (standalone, starting from initial_balance).
         test_account = account_simulation(
             test_rows,
@@ -457,6 +466,7 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
                 "train": train_m,
                 "test": test_m,
                 "test_account": test_account,
+                "test_trade_pnls": test_trade_pnls,
             }
         )
 

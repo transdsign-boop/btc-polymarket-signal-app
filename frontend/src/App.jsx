@@ -88,6 +88,50 @@ export default function App() {
     return !data?.polymarket?.slug
   }, [data])
 
+  const wfSimResult = useMemo(() => {
+    const folds = backtestSummary?.walk_forward?.folds
+    if (!folds?.length || !backtestSummary?.walk_forward?.ok) return null
+
+    const startBalance = Number(simInitialBalance)
+    const riskFraction = Math.max(0, Math.min(100, Number(simRiskPct))) / 100
+    if (!Number.isFinite(startBalance) || startBalance <= 0) return null
+
+    let balance = startBalance
+    let peak = startBalance
+    let maxDrawdown = 0
+    let totalTrades = 0
+    let totalWins = 0
+
+    for (const fold of folds) {
+      const pnls = fold.test_trade_pnls
+      if (!pnls?.length) continue
+      for (const tradePnl of pnls) {
+        const stakeBase = simCompounding ? balance : startBalance
+        const stake = Math.max(0, Math.min(balance, stakeBase * riskFraction))
+        balance += stake * tradePnl
+        totalTrades += 1
+        if (tradePnl >= 0) totalWins += 1
+        peak = Math.max(peak, balance)
+        maxDrawdown = Math.max(maxDrawdown, peak - balance)
+        if (balance <= 0) { balance = 0; break }
+      }
+      if (balance <= 0) break
+    }
+
+    const netPnl = balance - startBalance
+    return {
+      initial_balance: startBalance,
+      ending_balance: balance,
+      net_pnl: netPnl,
+      roi: netPnl / startBalance,
+      trades: totalTrades,
+      wins: totalWins,
+      win_rate: totalTrades ? totalWins / totalTrades : 0,
+      max_drawdown: maxDrawdown,
+      max_drawdown_pct: peak > 0 ? maxDrawdown / peak : null,
+    }
+  }, [backtestSummary, simInitialBalance, simRiskPct, simCompounding])
+
   const simResult = useMemo(() => {
     if (!backtestRows.length) return null
 
@@ -234,24 +278,24 @@ export default function App() {
               </div>
             </article>
           </section>
-          {backtestSummary.walk_forward.aggregate_account ? (
+          {wfSimResult ? (
             <section className="mt-4 grid gap-4 md:grid-cols-3">
               <article className="card">
                 <div className="label">WF Account (Start → End)</div>
                 <div className="value">
-                  {usd(backtestSummary.walk_forward.aggregate_account.initial_balance)} → {usd(backtestSummary.walk_forward.aggregate_account.ending_balance)}
+                  {usd(wfSimResult.initial_balance)} → {usd(wfSimResult.ending_balance)}
                 </div>
               </article>
               <article className="card">
                 <div className="label">WF Net PnL / ROI</div>
-                <div className={`value ${(backtestSummary.walk_forward.aggregate_account.net_pnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-300'}`}>
-                  {usd(backtestSummary.walk_forward.aggregate_account.net_pnl)} / {pct(backtestSummary.walk_forward.aggregate_account.roi)}
+                <div className={`value ${(wfSimResult.net_pnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-300'}`}>
+                  {usd(wfSimResult.net_pnl)} / {pct(wfSimResult.roi)}
                 </div>
               </article>
               <article className="card">
                 <div className="label">WF Max Drawdown</div>
                 <div className="value text-red-300">
-                  {usd(backtestSummary.walk_forward.aggregate_account.max_drawdown)} {backtestSummary.walk_forward.aggregate_account.max_drawdown_pct != null ? `(${pct(backtestSummary.walk_forward.aggregate_account.max_drawdown_pct)})` : ''}
+                  {usd(wfSimResult.max_drawdown)} {wfSimResult.max_drawdown_pct != null ? `(${pct(wfSimResult.max_drawdown_pct)})` : ''}
                 </div>
               </article>
             </section>
