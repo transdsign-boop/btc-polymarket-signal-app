@@ -22,6 +22,9 @@ export default function App() {
   const [backtestSummary, setBacktestSummary] = useState(null)
   const [backtestRows, setBacktestRows] = useState([])
   const [backtestError, setBacktestError] = useState('')
+  const [simInitialBalance, setSimInitialBalance] = useState(10000)
+  const [simRiskPct, setSimRiskPct] = useState(2)
+  const [simCompounding, setSimCompounding] = useState(true)
 
   useEffect(() => {
     let active = true
@@ -84,6 +87,49 @@ export default function App() {
   const slugMissing = useMemo(() => {
     return !data?.polymarket?.slug
   }, [data])
+
+  const simResult = useMemo(() => {
+    if (!backtestRows.length) return null
+
+    const startBalance = Number(simInitialBalance)
+    const riskFraction = Math.max(0, Math.min(100, Number(simRiskPct))) / 100
+    if (!Number.isFinite(startBalance) || startBalance <= 0) return null
+
+    const sortedRows = [...backtestRows].sort((a, b) => Number(a.start_ts || 0) - Number(b.start_ts || 0))
+    let balance = startBalance
+    let peak = startBalance
+    let maxDrawdown = 0
+    let wins = 0
+
+    for (const row of sortedRows) {
+      const tradePnl = Number(row.trade_pnl || 0)
+      const stakeBase = simCompounding ? balance : startBalance
+      const stake = Math.max(0, Math.min(balance, stakeBase * riskFraction))
+      balance += stake * tradePnl
+      if (tradePnl >= 0) wins += 1
+      peak = Math.max(peak, balance)
+      maxDrawdown = Math.max(maxDrawdown, peak - balance)
+      if (balance <= 0) {
+        balance = 0
+        break
+      }
+    }
+
+    const netPnl = balance - startBalance
+    return {
+      initial_balance: startBalance,
+      ending_balance: balance,
+      net_pnl: netPnl,
+      roi: netPnl / startBalance,
+      trades: sortedRows.length,
+      wins,
+      win_rate: sortedRows.length ? wins / sortedRows.length : 0,
+      risk_per_trade: riskFraction,
+      compounding: simCompounding,
+      max_drawdown: maxDrawdown,
+      max_drawdown_pct: peak > 0 ? maxDrawdown / peak : null,
+    }
+  }, [backtestRows, simInitialBalance, simRiskPct, simCompounding])
 
   return (
     <main className="mx-auto max-w-5xl p-6 md:p-10">
@@ -189,24 +235,61 @@ export default function App() {
         </section>
       ) : null}
 
-      {backtestSummary?.account_sim ? (
+      <section className="mt-4 rounded-2xl border border-slate-800 bg-panel/60 p-4">
+        <h3 className="text-sm font-semibold text-slate-200">Simulation Controls</h3>
+        <div className="mt-3 grid gap-3 md:grid-cols-3">
+          <label className="text-sm text-slate-300">
+            <span className="block text-xs uppercase tracking-wider text-slate-400">Starting Balance ($)</span>
+            <input
+              type="number"
+              min="1"
+              step="100"
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100"
+              value={simInitialBalance}
+              onChange={(e) => setSimInitialBalance(Number(e.target.value))}
+            />
+          </label>
+          <label className="text-sm text-slate-300">
+            <span className="block text-xs uppercase tracking-wider text-slate-400">Risk Per Trade (%)</span>
+            <input
+              type="number"
+              min="0"
+              max="100"
+              step="0.1"
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100"
+              value={simRiskPct}
+              onChange={(e) => setSimRiskPct(Number(e.target.value))}
+            />
+          </label>
+          <label className="flex items-center gap-2 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={simCompounding}
+              onChange={(e) => setSimCompounding(e.target.checked)}
+            />
+            <span>Compounding</span>
+          </label>
+        </div>
+      </section>
+
+      {simResult ? (
         <section className="mt-4 grid gap-4 md:grid-cols-3">
           <article className="card">
             <div className="label">Sim Balance (Start - End)</div>
             <div className="value">
-              {usd(backtestSummary.account_sim.initial_balance)} - {usd(backtestSummary.account_sim.ending_balance)}
+              {usd(simResult.initial_balance)} - {usd(simResult.ending_balance)}
             </div>
           </article>
           <article className="card">
             <div className="label">Sim Net PnL / ROI</div>
-            <div className={`value ${(backtestSummary.account_sim.net_pnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-300'}`}>
-              {usd(backtestSummary.account_sim.net_pnl)} / {pct(backtestSummary.account_sim.roi)}
+            <div className={`value ${(simResult.net_pnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-300'}`}>
+              {usd(simResult.net_pnl)} / {pct(simResult.roi)}
             </div>
           </article>
           <article className="card">
             <div className="label">Sim Max Drawdown</div>
             <div className="value text-red-300">
-              {usd(backtestSummary.account_sim.max_drawdown)} {backtestSummary.account_sim.max_drawdown_pct != null ? `(${pct(backtestSummary.account_sim.max_drawdown_pct)})` : ''}
+              {usd(simResult.max_drawdown)} {simResult.max_drawdown_pct != null ? `(${pct(simResult.max_drawdown_pct)})` : ''}
             </div>
           </article>
         </section>
