@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { fetchBacktestRows, fetchBacktestSummary, fetchState, tick } from './api'
+import { fetchBacktestRows, fetchBacktestSummary, fetchPaperState, fetchState, resetPaperTrading, tick } from './api'
 
 function pct(v) {
   if (typeof v !== 'number' || Number.isNaN(v)) return 'N/A'
@@ -25,6 +25,12 @@ export default function App() {
   const [simInitialBalance, setSimInitialBalance] = useState(10000)
   const [simRiskPct, setSimRiskPct] = useState(2)
   const [simCompounding, setSimCompounding] = useState(true)
+
+  const [paperState, setPaperState] = useState(null)
+  const [paperResetBalance, setPaperResetBalance] = useState(10000)
+  const [paperResetRisk, setPaperResetRisk] = useState(2)
+  const [paperResetCompounding, setPaperResetCompounding] = useState(true)
+  const [paperResetting, setPaperResetting] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -83,6 +89,29 @@ export default function App() {
       active = false
     }
   }, [])
+
+  useEffect(() => {
+    let active = true
+    const loadPaper = async () => {
+      try {
+        const res = await fetchPaperState()
+        if (active && res?.ok) setPaperState(res)
+      } catch {}
+    }
+    loadPaper()
+    const id = setInterval(loadPaper, 15000)
+    return () => { active = false; clearInterval(id) }
+  }, [])
+
+  const handlePaperReset = async () => {
+    setPaperResetting(true)
+    try {
+      await resetPaperTrading(paperResetBalance, paperResetRisk, paperResetCompounding)
+      const res = await fetchPaperState()
+      if (res?.ok) setPaperState(res)
+    } catch {}
+    setPaperResetting(false)
+  }
 
   const slugMissing = useMemo(() => {
     return !data?.polymarket?.slug
@@ -224,6 +253,129 @@ export default function App() {
             {pct(data?.edge)}
           </div>
         </article>
+      </section>
+
+      {/* --- Paper Trading Dashboard --- */}
+      <section className="mt-8">
+        <h2 className="text-xl font-semibold">Paper Trading</h2>
+        <p className="mt-1 text-sm text-slate-400">Live paper trades from signal engine. Trades resolve when 5-min markets close.</p>
+      </section>
+
+      {paperState?.stats ? (
+        <section className="mt-4 grid gap-4 md:grid-cols-4">
+          <article className="card">
+            <div className="label">Paper Balance</div>
+            <div className={`value ${paperState.stats.total_pnl_usd >= 0 ? 'text-emerald-400' : 'text-red-300'}`}>
+              {usd(paperState.balance)}
+            </div>
+          </article>
+          <article className="card">
+            <div className="label">Total PnL</div>
+            <div className={`value ${(paperState.stats.total_pnl_usd ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-300'}`}>
+              {usd(paperState.stats.total_pnl_usd)}
+            </div>
+          </article>
+          <article className="card">
+            <div className="label">Trades / Win Rate</div>
+            <div className="value">
+              {paperState.stats.resolved} / {paperState.stats.win_rate != null ? pct(paperState.stats.win_rate) : 'N/A'}
+            </div>
+          </article>
+          <article className="card">
+            <div className="label">Pending</div>
+            <div className={`value ${paperState.stats.pending > 0 ? 'text-amber-400' : 'text-slate-200'}`}>
+              {paperState.stats.pending}
+            </div>
+          </article>
+        </section>
+      ) : (
+        <div className="mt-4 rounded-xl border border-slate-800 bg-panel/60 p-4 text-slate-400">
+          No paper trades yet. Waiting for TRADE signals...
+        </div>
+      )}
+
+      {paperState?.trades?.length ? (
+        <section className="mt-4 overflow-x-auto rounded-2xl border border-slate-800 bg-panel/60">
+          <table className="min-w-full text-sm">
+            <thead className="bg-slate-900/70 text-slate-300">
+              <tr>
+                <th className="px-3 py-2 text-left">Time</th>
+                <th className="px-3 py-2 text-left">Slug</th>
+                <th className="px-3 py-2 text-left">Edge</th>
+                <th className="px-3 py-2 text-right">Stake</th>
+                <th className="px-3 py-2 text-left">Status</th>
+                <th className="px-3 py-2 text-left">Result</th>
+                <th className="px-3 py-2 text-right">PnL ($)</th>
+                <th className="px-3 py-2 text-right">Balance</th>
+              </tr>
+            </thead>
+            <tbody>
+              {paperState.trades.map((t) => (
+                <tr key={t.id} className="border-t border-slate-800">
+                  <td className="px-3 py-2 font-mono text-xs text-slate-400">
+                    {t.entry_iso ? new Date(t.entry_iso).toLocaleTimeString() : '—'}
+                  </td>
+                  <td className="px-3 py-2 font-mono text-xs text-slate-300">{t.slug}</td>
+                  <td className="px-3 py-2">{pct(t.edge)}</td>
+                  <td className="px-3 py-2 text-right">{usd(t.stake_usd)}</td>
+                  <td className={`px-3 py-2 ${t.status === 'pending' ? 'text-amber-400' : t.status === 'resolved' ? 'text-slate-200' : 'text-slate-500'}`}>
+                    {t.status}
+                  </td>
+                  <td className={`px-3 py-2 font-semibold ${t.hit === true ? 'text-emerald-400' : t.hit === false ? 'text-red-300' : 'text-slate-500'}`}>
+                    {t.hit === true ? 'WIN' : t.hit === false ? 'LOSS' : '—'}
+                  </td>
+                  <td className={`px-3 py-2 text-right ${(t.pnl_usd ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-300'}`}>
+                    {t.pnl_usd != null ? usd(t.pnl_usd) : '—'}
+                  </td>
+                  <td className="px-3 py-2 text-right text-slate-300">
+                    {t.balance_after != null ? usd(t.balance_after) : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
+
+      <section className="mt-4 rounded-2xl border border-slate-800 bg-panel/60 p-4">
+        <h3 className="text-sm font-semibold text-slate-200">Paper Trading Controls</h3>
+        <div className="mt-3 grid gap-3 md:grid-cols-4">
+          <label className="text-sm text-slate-300">
+            <span className="block text-xs uppercase tracking-wider text-slate-400">Starting Balance ($)</span>
+            <input
+              type="number" min="1" step="100"
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100"
+              value={paperResetBalance}
+              onChange={(e) => setPaperResetBalance(Number(e.target.value))}
+            />
+          </label>
+          <label className="text-sm text-slate-300">
+            <span className="block text-xs uppercase tracking-wider text-slate-400">Risk Per Trade (%)</span>
+            <input
+              type="number" min="0" max="100" step="0.1"
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100"
+              value={paperResetRisk}
+              onChange={(e) => setPaperResetRisk(Number(e.target.value))}
+            />
+          </label>
+          <label className="flex items-center gap-2 text-sm text-slate-300 self-end pb-2">
+            <input
+              type="checkbox"
+              checked={paperResetCompounding}
+              onChange={(e) => setPaperResetCompounding(e.target.checked)}
+            />
+            <span>Compounding</span>
+          </label>
+          <div className="self-end">
+            <button
+              onClick={handlePaperReset}
+              disabled={paperResetting}
+              className="w-full rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-500 disabled:opacity-50"
+            >
+              {paperResetting ? 'Resetting...' : 'Reset Paper Account'}
+            </button>
+          </div>
+        </div>
       </section>
 
       <section className="mt-8">

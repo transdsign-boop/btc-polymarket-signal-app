@@ -1,9 +1,11 @@
 import json
 import math
 import os
+import threading
 import time
 import csv
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -14,6 +16,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 load_dotenv()
 
@@ -42,6 +45,204 @@ POLYMARKET_API_KEY = os.getenv("POLYMARKET_API_KEY", "").strip()
 BACKTEST_DIR = Path(os.getenv("BACKTEST_DIR", "backtest_results"))
 SIGNAL_EDGE_MIN = float(os.getenv("SIGNAL_EDGE_MIN", "0.11"))
 SIGNAL_MAX_VOL_5M = float(os.getenv("SIGNAL_MAX_VOL_5M", "0.002"))
+
+# --- Paper trading persistence ---
+DATA_DIR = Path(os.getenv("BACKTEST_DIR", "backtest_results")).parent  # /data on Fly
+PAPER_TRADES_FILE = DATA_DIR / "paper_trades.json"
+PAPER_INITIAL_BALANCE = float(os.getenv("PAPER_INITIAL_BALANCE", "10000"))
+PAPER_RISK_PCT = float(os.getenv("PAPER_RISK_PCT", "2.0"))
+PAPER_COMPOUNDING = os.getenv("PAPER_COMPOUNDING", "true").lower() in ("true", "1", "yes")
+
+_paper_lock = threading.Lock()
+
+
+def _fresh_paper_state() -> Dict[str, Any]:
+    return {
+        "config": {
+            "initial_balance": PAPER_INITIAL_BALANCE,
+            "risk_per_trade_pct": PAPER_RISK_PCT,
+            "compounding": PAPER_COMPOUNDING,
+        },
+        "balance": PAPER_INITIAL_BALANCE,
+        "trades": [],
+    }
+
+
+def _load_paper_state() -> Dict[str, Any]:
+    if PAPER_TRADES_FILE.exists():
+        try:
+            data = json.loads(PAPER_TRADES_FILE.read_text())
+            if isinstance(data, dict) and "balance" in data and "trades" in data:
+                if "config" not in data:
+                    data["config"] = _fresh_paper_state()["config"]
+                return data
+        except (json.JSONDecodeError, OSError):
+            pass
+    return _fresh_paper_state()
+
+
+def _save_paper_state(state: Dict[str, Any]) -> None:
+    try:
+        PAPER_TRADES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = PAPER_TRADES_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, indent=2))
+        tmp.replace(PAPER_TRADES_FILE)
+    except OSError:
+        pass
+
+
+def _maybe_enter_paper_trade(paper: Dict[str, Any], state: Dict[str, Any]) -> None:
+    if state.get("signal") != "TRADE":
+        return
+    poly = state.get("polymarket", {})
+    slug = poly.get("slug", "")
+    if not slug:
+        return
+    # Dedup: don't enter same slug twice
+    existing_slugs = {t["slug"] for t in paper["trades"]}
+    if slug in existing_slugs:
+        return
+
+    config = paper["config"]
+    balance = paper["balance"]
+    risk_frac = config["risk_per_trade_pct"] / 100.0
+    stake_base = balance if config["compounding"] else config["initial_balance"]
+    stake = max(0.0, min(balance, stake_base * risk_frac))
+    if stake <= 0:
+        return
+
+    market_prob_up = poly.get("implied_prob_up")
+    if market_prob_up is None:
+        return
+
+    now = int(time.time())
+    # The slug encodes the 5-min market end timestamp (e.g. btc-updown-5m-1739900100)
+    resolve_ts = now + 300  # default: 5 min from now
+    parts = slug.rsplit("-", 1)
+    if len(parts) == 2:
+        try:
+            resolve_ts = int(parts[1])
+        except ValueError:
+            pass
+
+    trade = {
+        "id": len(paper["trades"]) + 1,
+        "slug": slug,
+        "token_id": poly.get("token_id"),
+        "entry_ts": now,
+        "entry_iso": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+        "resolve_ts": resolve_ts,
+        "btc_price": state.get("btc_price"),
+        "model_prob_up": state.get("model_prob_up"),
+        "market_prob_up": market_prob_up,
+        "edge": state.get("edge"),
+        "fee_buffer": state.get("fee_buffer"),
+        "stake_usd": round(stake, 2),
+        "status": "pending",
+        "outcome_up": None,
+        "trade_pnl_pct": None,
+        "pnl_usd": None,
+        "hit": None,
+        "balance_after": None,
+    }
+    paper["trades"].append(trade)
+    _save_paper_state(paper)
+
+
+def _resolve_pending_trades(paper: Dict[str, Any]) -> None:
+    now = int(time.time())
+    changed = False
+    for trade in paper["trades"]:
+        if trade["status"] != "pending":
+            continue
+
+        # Expire stale trades (>1 hour old)
+        if now - trade["entry_ts"] > 3600:
+            trade["status"] = "expired"
+            trade["outcome_up"] = None
+            trade["trade_pnl_pct"] = 0.0
+            trade["pnl_usd"] = 0.0
+            trade["hit"] = None
+            trade["balance_after"] = paper["balance"]
+            changed = True
+            continue
+
+        # Wait for settlement grace period (30s after market close)
+        if now < trade["resolve_ts"] + 30:
+            continue
+
+        try:
+            market = _fetch_market_by_slug(trade["slug"])
+            if not market:
+                continue
+            if not market.get("closed"):
+                continue
+
+            # Extract outcome price for the Up/Yes token
+            outcome_prices = _parse_maybe_json_array(market.get("outcomePrices"))
+            outcomes = _parse_maybe_json_array(market.get("outcomes"))
+
+            outcome_up = None
+            if outcome_prices and outcomes:
+                # Find the Up/Yes outcome price
+                normalized = [str(o).strip().lower() for o in outcomes]
+                for idx, o in enumerate(normalized):
+                    if o in {"yes", "up", "true"}:
+                        outcome_up = _safe_float(outcome_prices[idx])
+                        break
+                if outcome_up is None and outcome_prices:
+                    outcome_up = _safe_float(outcome_prices[0])
+            elif outcome_prices:
+                outcome_up = _safe_float(outcome_prices[0])
+
+            if outcome_up is None:
+                continue
+
+            # PnL: we bought at market_prob_up, outcome resolved to outcome_up (1.0 or 0.0)
+            market_prob_up = trade["market_prob_up"]
+            fee_buffer = trade.get("fee_buffer", 0.03)
+            trade_pnl_pct = outcome_up - market_prob_up - fee_buffer
+            pnl_usd = round(trade["stake_usd"] * trade_pnl_pct, 2)
+
+            trade["status"] = "resolved"
+            trade["outcome_up"] = outcome_up
+            trade["trade_pnl_pct"] = round(trade_pnl_pct, 4)
+            trade["pnl_usd"] = pnl_usd
+            trade["hit"] = outcome_up >= 0.5
+            paper["balance"] = round(paper["balance"] + pnl_usd, 2)
+            trade["balance_after"] = paper["balance"]
+            changed = True
+        except Exception:
+            continue
+
+    if changed:
+        _save_paper_state(paper)
+
+
+def _paper_summary(paper: Dict[str, Any]) -> Dict[str, Any]:
+    trades = paper["trades"]
+    resolved = [t for t in trades if t["status"] == "resolved"]
+    pending = [t for t in trades if t["status"] == "pending"]
+    wins = [t for t in resolved if (t.get("pnl_usd") or 0) >= 0]
+    total_pnl = sum(t.get("pnl_usd", 0) for t in resolved)
+    return {
+        "balance": paper["balance"],
+        "initial_balance": paper["config"]["initial_balance"],
+        "total_trades": len(trades),
+        "resolved": len(resolved),
+        "pending": len(pending),
+        "wins": len(wins),
+        "win_rate": len(wins) / len(resolved) if resolved else None,
+        "total_pnl_usd": round(total_pnl, 2),
+        "last_trade": trades[-1] if trades else None,
+    }
+
+
+class PaperResetRequest(BaseModel):
+    initial_balance: float = PAPER_INITIAL_BALANCE
+    risk_per_trade_pct: float = PAPER_RISK_PCT
+    compounding: bool = PAPER_COMPOUNDING
+
 
 btc_prices: deque[float] = deque(maxlen=60)
 
@@ -272,6 +473,12 @@ def compute_state() -> Dict[str, Any]:
     fee_buffer = float(os.getenv("FEE_BUFFER", "0.03"))
     slug = os.getenv("POLYMARKET_SLUG", "")
 
+    # 1. Resolve pending paper trades
+    with _paper_lock:
+        paper = _load_paper_state()
+        _resolve_pending_trades(paper)
+
+    # 2-4. Existing signal logic
     btc_price = fetch_btc_price()
     btc_prices.append(btc_price)
 
@@ -305,6 +512,13 @@ def compute_state() -> Dict[str, Any]:
         "edge": edge,
         "signal": signal,
     }
+
+    # 5-6. Enter new paper trade if TRADE signal, attach summary
+    with _paper_lock:
+        paper = _load_paper_state()
+        _maybe_enter_paper_trade(paper, latest_state)
+        latest_state["paper"] = _paper_summary(paper)
+
     return latest_state
 
 
@@ -371,6 +585,33 @@ def backtest_rows(limit: int = 5000, signal: str = "") -> Dict[str, Any]:
         return {"ok": False, "error": f"Failed to load rows: {exc}", "rows": []}
 
 
+@app.get("/paper/state")
+def paper_state() -> Dict[str, Any]:
+    with _paper_lock:
+        paper = _load_paper_state()
+    summary = _paper_summary(paper)
+    recent_trades = list(reversed(paper["trades"][-100:]))
+    return {
+        "ok": True,
+        "config": paper["config"],
+        "balance": paper["balance"],
+        "stats": summary,
+        "trades": recent_trades,
+    }
+
+
+@app.post("/paper/reset")
+def paper_reset(req: PaperResetRequest) -> Dict[str, Any]:
+    with _paper_lock:
+        state = _fresh_paper_state()
+        state["config"]["initial_balance"] = req.initial_balance
+        state["config"]["risk_per_trade_pct"] = req.risk_per_trade_pct
+        state["config"]["compounding"] = req.compounding
+        state["balance"] = req.initial_balance
+        _save_paper_state(state)
+    return {"ok": True, "balance": req.initial_balance}
+
+
 if (FRONTEND_DIST_DIR / "assets").exists():
     app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST_DIR / "assets")), name="assets")
 
@@ -385,7 +626,7 @@ def root() -> Any:
 
 @app.get("/{full_path:path}")
 def spa_fallback(full_path: str) -> Any:
-    if full_path.startswith("health") or full_path.startswith("state") or full_path.startswith("tick") or full_path.startswith("backtest/"):
+    if full_path.startswith(("health", "state", "tick", "backtest/", "paper/")):
         return {"detail": "Not Found"}
     index_path = FRONTEND_DIST_DIR / "index.html"
     if index_path.exists():

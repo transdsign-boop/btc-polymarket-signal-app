@@ -25,3 +25,23 @@ export async function fetchBacktestRows(limit = 5000, signal = '') {
   if (!res.ok) throw new Error(`backtest rows failed: ${res.status}`)
   return res.json()
 }
+
+export async function fetchPaperState() {
+  const res = await fetch(`${API_BASE}/paper/state`)
+  if (!res.ok) throw new Error(`paper state failed: ${res.status}`)
+  return res.json()
+}
+
+export async function resetPaperTrading(initialBalance = 10000, riskPct = 2.0, compounding = true) {
+  const res = await fetch(`${API_BASE}/paper/reset`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      initial_balance: initialBalance,
+      risk_per_trade_pct: riskPct,
+      compounding,
+    }),
+  })
+  if (!res.ok) throw new Error(`paper reset failed: ${res.status}`)
+  return res.json()
+}
