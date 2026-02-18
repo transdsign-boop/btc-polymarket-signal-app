@@ -519,11 +519,11 @@ def optimize_signal_params(
                     m = trade_metrics(recomputed, edge_min=edge_min, max_vol_5m=max_vol_5m, allowed_regimes=regimes)
                     if m["trades"] < min_trades:
                         continue
-                    # Trade-count-adjusted Sharpe: penalize configs near min_trades.
-                    # Full credit at 2*min_trades, sqrt scaling below that.
-                    trade_scale = math.sqrt(min(m["trades"], 2 * min_trades) / (2 * min_trades))
-                    adj_sharpe = m["sharpe"] * trade_scale
-                    key = (adj_sharpe, m["profit_factor"], m["win_rate"])
+                    # t-statistic: Sharpe * sqrt(n). Naturally balances consistency
+                    # and sample size — penalizes both noisy small samples AND
+                    # large samples with no edge.
+                    t_stat = m["sharpe"] * math.sqrt(m["trades"])
+                    key = (t_stat, m["profit_factor"], m["win_rate"])
                     if best is None or key > best["key"]:
                         best = {
                             "key": key,
@@ -564,7 +564,7 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
             "eligible_rows": n,
         }
 
-    edge_grid = [i / 100 for i in range(0, 19)]  # 0.00 to 0.18 — prevent extreme selectivity
+    edge_grid = [i / 100 for i in range(5, 19)]  # 0.05 to 0.18 — floor prevents noise, cap prevents over-selectivity
     vol_grid = [0.0015, 0.0018, 0.0020, 0.0022, 0.0025, 0.0030, 0.0035]
     folds: List[Dict[str, Any]] = []
 
@@ -960,7 +960,7 @@ def parse_args() -> argparse.Namespace:
     parser.set_defaults(walk_forward=True)
     parser.add_argument("--wf-train-rows", type=int, default=600)
     parser.add_argument("--wf-test-rows", type=int, default=120)
-    parser.add_argument("--wf-min-trades", type=int, default=20)
+    parser.add_argument("--wf-min-trades", type=int, default=30)
     args = parser.parse_args()
 
     if args.include_open:
