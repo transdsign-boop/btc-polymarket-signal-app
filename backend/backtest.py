@@ -555,6 +555,7 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
 
     edge_grid = [i / 100 for i in range(10, 15)]  # 0.10 to 0.14 — tight band around default 0.11
     vol_grid = [0.0018, 0.0020, 0.0022, 0.0025]
+    use_fixed = bool(getattr(args, "wf_fixed_params", False))
     folds: List[Dict[str, Any]] = []
 
     # Cumulative balance that carries across folds.
@@ -565,13 +566,16 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
         train_rows = eligible[start : start + train_n]
         test_rows_raw = eligible[start + train_n : start + train_n + test_n]
 
-        params = optimize_signal_params(
-            train_rows=train_rows,
-            edge_grid=edge_grid,
-            vol_grid=vol_grid,
-            min_trades=min_trades,
-            fee_buffer=fee_buffer,
-        )
+        if use_fixed:
+            params = {"edge_min": 0.11, "max_vol_5m": 0.002, "allowed_regimes": None, "weight_preset": "momentum_only"}
+        else:
+            params = optimize_signal_params(
+                train_rows=train_rows,
+                edge_grid=edge_grid,
+                vol_grid=vol_grid,
+                min_trades=min_trades,
+                fee_buffer=fee_buffer,
+            )
 
         ar = params.get("allowed_regimes")
         preset_name = params.get("weight_preset", "momentum_only")
@@ -950,6 +954,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wf-train-rows", type=int, default=600)
     parser.add_argument("--wf-test-rows", type=int, default=120)
     parser.add_argument("--wf-min-trades", type=int, default=30)
+    parser.add_argument("--wf-fixed-params", action="store_true", default=False,
+                        help="Use fixed default params in walk-forward (no optimization).")
     args = parser.parse_args()
 
     if args.include_open:
