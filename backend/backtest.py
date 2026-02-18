@@ -393,6 +393,9 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
     train_n = int(args.wf_train_rows)
     test_n = int(args.wf_test_rows)
     min_trades = int(args.wf_min_trades)
+    initial_balance = float(args.initial_balance)
+    risk_per_trade = float(args.risk_per_trade)
+    compounding = bool(args.compounding)
 
     if n < train_n + test_n:
         return {
@@ -404,6 +407,9 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
     edge_grid = [i / 100 for i in range(0, 31)]
     vol_grid = [0.0015, 0.0018, 0.0020, 0.0022, 0.0025, 0.0030]
     folds: List[Dict[str, Any]] = []
+
+    # Cumulative balance that carries across folds.
+    cumulative_balance = initial_balance
 
     start = 0
     while start + train_n + test_n <= n:
@@ -420,6 +426,27 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
         train_m = trade_metrics(train_rows, params["edge_min"], params["max_vol_5m"])
         test_m = trade_metrics(test_rows, params["edge_min"], params["max_vol_5m"])
 
+        # Per-fold account sim on test rows (standalone, starting from initial_balance).
+        test_account = account_simulation(
+            test_rows,
+            edge_min=params["edge_min"],
+            max_vol_5m=params["max_vol_5m"],
+            initial_balance=initial_balance,
+            risk_per_trade=risk_per_trade,
+            compounding=compounding,
+        )
+
+        # Cumulative account sim: start from the carry-forward balance.
+        cumulative_account = account_simulation(
+            test_rows,
+            edge_min=params["edge_min"],
+            max_vol_5m=params["max_vol_5m"],
+            initial_balance=cumulative_balance,
+            risk_per_trade=risk_per_trade,
+            compounding=compounding,
+        )
+        cumulative_balance = cumulative_account["ending_balance"]
+
         folds.append(
             {
                 "train_start_iso": utc_iso(int(train_rows[0]["start_ts"])),
@@ -429,6 +456,7 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
                 "params": params,
                 "train": train_m,
                 "test": test_m,
+                "test_account": test_account,
             }
         )
 
@@ -438,6 +466,24 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
     test_cum_pnl = float(np.sum([f["test"]["cum_pnl"] for f in folds])) if folds else 0.0
     test_trades = int(np.sum([f["test"]["trades"] for f in folds])) if folds else 0
     test_wins = int(np.sum([f["test"]["wins"] for f in folds])) if folds else 0
+
+    # Aggregate account sim: cumulative balance after all test folds.
+    cumulative_net_pnl = cumulative_balance - initial_balance
+    cumulative_roi = (cumulative_net_pnl / initial_balance) if initial_balance > 0 else 0.0
+
+    # Peak and max drawdown across the per-fold standalone sims.
+    agg_peak = initial_balance
+    agg_max_drawdown = 0.0
+    running_balance = initial_balance
+    for f in folds:
+        ta = f["test_account"]
+        # Apply this fold's net PnL to running balance for drawdown tracking.
+        fold_pnl = ta["ending_balance"] - ta["initial_balance"]
+        running_balance += fold_pnl
+        agg_peak = max(agg_peak, running_balance)
+        agg_max_drawdown = max(agg_max_drawdown, agg_peak - running_balance)
+
+    agg_max_drawdown_pct = (agg_max_drawdown / agg_peak) if agg_peak > 0 else None
 
     return {
         "ok": True,
@@ -449,10 +495,26 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
             "wins": test_wins,
             "win_rate": (test_wins / test_trades) if test_trades else 0.0,
         },
+        "aggregate_account": {
+            "initial_balance": initial_balance,
+            "ending_balance": cumulative_balance,
+            "net_pnl": cumulative_net_pnl,
+            "roi": cumulative_roi,
+            "trades": test_trades,
+            "wins": test_wins,
+            "win_rate": (test_wins / test_trades) if test_trades else 0.0,
+            "risk_per_trade": risk_per_trade,
+            "compounding": compounding,
+            "max_drawdown": agg_max_drawdown,
+            "max_drawdown_pct": float(agg_max_drawdown_pct) if agg_max_drawdown_pct is not None else None,
+        },
         "config": {
             "train_rows": train_n,
             "test_rows": test_n,
             "min_trades": min_trades,
+            "initial_balance": initial_balance,
+            "risk_per_trade": risk_per_trade,
+            "compounding": compounding,
         },
     }
 
