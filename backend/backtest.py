@@ -308,19 +308,11 @@ WEIGHT_PRESETS: Dict[str, Dict[str, float]] = {
     },
     "momentum_rsi": {
         "mom_1m": 160.0, "mom_3m": 100.0, "vol_5m": -40.0,
-        "rsi_14": 0.08, "bb_width": 0.0, "roc_5": 0.0, "mom_accel": 0.0,
+        "rsi_14": 0.06, "bb_width": 0.0, "roc_5": 0.0, "mom_accel": 0.0,
     },
-    "balanced": {
-        "mom_1m": 120.0, "mom_3m": 80.0, "vol_5m": -60.0,
-        "rsi_14": 0.06, "bb_width": -500.0, "roc_5": 80.0, "mom_accel": 40.0,
-    },
-    "conservative": {
-        "mom_1m": 100.0, "mom_3m": 60.0, "vol_5m": -80.0,
-        "rsi_14": 0.04, "bb_width": -800.0, "roc_5": 40.0, "mom_accel": 20.0,
-    },
-    "trend_follow": {
-        "mom_1m": 200.0, "mom_3m": 150.0, "vol_5m": -20.0,
-        "rsi_14": 0.0, "bb_width": 0.0, "roc_5": 100.0, "mom_accel": 60.0,
+    "momentum_plus": {
+        "mom_1m": 150.0, "mom_3m": 100.0, "vol_5m": -50.0,
+        "rsi_14": 0.04, "bb_width": -200.0, "roc_5": 50.0, "mom_accel": 25.0,
     },
 }
 
@@ -506,9 +498,7 @@ def account_simulation(
 
 REGIME_OPTIONS: List[Optional[List[str]]] = [
     None,
-    ["Trend"],
     ["Trend", "Chop"],
-    ["Trend", "Vol Spike"],
 ]
 
 
@@ -529,8 +519,11 @@ def optimize_signal_params(
                     m = trade_metrics(recomputed, edge_min=edge_min, max_vol_5m=max_vol_5m, allowed_regimes=regimes)
                     if m["trades"] < min_trades:
                         continue
-                    # Primary objective: Sharpe (consistency), tie-break by profit factor then win rate.
-                    key = (m["sharpe"], m["profit_factor"], m["win_rate"])
+                    # Trade-count-adjusted Sharpe: penalize configs near min_trades.
+                    # Full credit at 2*min_trades, sqrt scaling below that.
+                    trade_scale = math.sqrt(min(m["trades"], 2 * min_trades) / (2 * min_trades))
+                    adj_sharpe = m["sharpe"] * trade_scale
+                    key = (adj_sharpe, m["profit_factor"], m["win_rate"])
                     if best is None or key > best["key"]:
                         best = {
                             "key": key,
@@ -571,8 +564,8 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
             "eligible_rows": n,
         }
 
-    edge_grid = [i / 100 for i in range(0, 31)]
-    vol_grid = [0.0015, 0.0018, 0.0020, 0.0022, 0.0025, 0.0030]
+    edge_grid = [i / 100 for i in range(0, 19)]  # 0.00 to 0.18 — prevent extreme selectivity
+    vol_grid = [0.0015, 0.0018, 0.0020, 0.0022, 0.0025, 0.0030, 0.0035]
     folds: List[Dict[str, Any]] = []
 
     # Cumulative balance that carries across folds.
@@ -967,7 +960,7 @@ def parse_args() -> argparse.Namespace:
     parser.set_defaults(walk_forward=True)
     parser.add_argument("--wf-train-rows", type=int, default=600)
     parser.add_argument("--wf-test-rows", type=int, default=120)
-    parser.add_argument("--wf-min-trades", type=int, default=30)
+    parser.add_argument("--wf-min-trades", type=int, default=20)
     args = parser.parse_args()
 
     if args.include_open:

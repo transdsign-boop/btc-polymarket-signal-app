@@ -249,19 +249,11 @@ WEIGHT_PRESETS: Dict[str, Dict[str, float]] = {
     },
     "momentum_rsi": {
         "mom_1m": 160.0, "mom_3m": 100.0, "vol_5m": -40.0,
-        "rsi_14": 0.08, "bb_width": 0.0, "roc_5": 0.0, "mom_accel": 0.0,
+        "rsi_14": 0.06, "bb_width": 0.0, "roc_5": 0.0, "mom_accel": 0.0,
     },
-    "balanced": {
-        "mom_1m": 120.0, "mom_3m": 80.0, "vol_5m": -60.0,
-        "rsi_14": 0.06, "bb_width": -500.0, "roc_5": 80.0, "mom_accel": 40.0,
-    },
-    "conservative": {
-        "mom_1m": 100.0, "mom_3m": 60.0, "vol_5m": -80.0,
-        "rsi_14": 0.04, "bb_width": -800.0, "roc_5": 40.0, "mom_accel": 20.0,
-    },
-    "trend_follow": {
-        "mom_1m": 200.0, "mom_3m": 150.0, "vol_5m": -20.0,
-        "rsi_14": 0.0, "bb_width": 0.0, "roc_5": 100.0, "mom_accel": 60.0,
+    "momentum_plus": {
+        "mom_1m": 150.0, "mom_3m": 100.0, "vol_5m": -50.0,
+        "rsi_14": 0.04, "bb_width": -200.0, "roc_5": 50.0, "mom_accel": 25.0,
     },
 }
 ACTIVE_WEIGHTS = WEIGHT_PRESETS.get(SIGNAL_WEIGHT_PRESET, DEFAULT_WEIGHTS)
