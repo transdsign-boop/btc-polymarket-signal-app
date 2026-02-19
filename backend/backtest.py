@@ -262,23 +262,69 @@ def classify_regime(features: Dict[str, float]) -> str:
     return "Chop"
 
 
-def apply_signal_rule(row: Dict[str, Any], edge_min: float, max_vol_5m: float) -> bool:
+def apply_signal_rule(
+    row: Dict[str, Any],
+    edge_min_up: float,
+    edge_min_down: float,
+    max_vol_5m: float,
+    max_model_prob_up: float,
+    max_model_prob_down: float,
+    min_down_mom_1m_abs: float,
+) -> bool:
     edge = row.get("edge")
     vol = row.get("vol_5m")
-    if edge is None or vol is None:
+    model_prob_side = row.get("model_prob_side")
+    bet_side = str(row.get("bet_side") or "UP").upper()
+    if bet_side not in {"UP", "DOWN"}:
+        bet_side = "UP"
+    if edge is None or vol is None or model_prob_side is None:
         return False
-    return float(edge) > edge_min and float(vol) <= max_vol_5m
+    if float(vol) > max_vol_5m:
+        return False
+    if bet_side == "DOWN":
+        mom_1m = safe_float(row.get("mom_1m"))
+        if mom_1m is None:
+            return False
+        return (
+            float(edge) > edge_min_down
+            and float(model_prob_side) <= max_model_prob_down
+            and float(mom_1m) <= -float(min_down_mom_1m_abs)
+        )
+    return float(edge) > edge_min_up and float(model_prob_side) <= max_model_prob_up
 
 
-def trade_metrics(rows: List[Dict[str, Any]], edge_min: float, max_vol_5m: float) -> Dict[str, Any]:
+def trade_metrics(
+    rows: List[Dict[str, Any]],
+    edge_min_up: float,
+    edge_min_down: float,
+    max_vol_5m: float,
+    max_model_prob_up: float,
+    max_model_prob_down: float,
+    min_down_mom_1m_abs: float,
+) -> Dict[str, Any]:
     trades: List[Dict[str, Any]] = []
     for r in rows:
         if r.get("market_prob_up") is None or r.get("outcome_up") is None:
             continue
-        if apply_signal_rule(r, edge_min=edge_min, max_vol_5m=max_vol_5m):
+        if apply_signal_rule(
+            r,
+            edge_min_up=edge_min_up,
+            edge_min_down=edge_min_down,
+            max_vol_5m=max_vol_5m,
+            max_model_prob_up=max_model_prob_up,
+            max_model_prob_down=max_model_prob_down,
+            min_down_mom_1m_abs=min_down_mom_1m_abs,
+        ):
             trades.append(r)
 
-    wins = [r for r in trades if float(r["outcome_up"]) >= 0.5]
+    wins = []
+    for r in trades:
+        outcome_up = safe_float(r.get("outcome_up"))
+        if outcome_up is None:
+            continue
+        bet_side = str(r.get("bet_side") or "UP").upper()
+        if (bet_side == "UP" and outcome_up >= 0.5) or (bet_side == "DOWN" and outcome_up < 0.5):
+            wins.append(r)
     pnl_values = [float(r["trade_pnl"]) for r in trades]
     edges = [float(r["edge"]) for r in trades]
 
@@ -307,8 +353,12 @@ def trade_metrics(rows: List[Dict[str, Any]], edge_min: float, max_vol_5m: float
 
 def account_simulation(
     rows: List[Dict[str, Any]],
-    edge_min: float,
+    edge_min_up: float,
+    edge_min_down: float,
     max_vol_5m: float,
+    max_model_prob_up: float,
+    max_model_prob_down: float,
+    min_down_mom_1m_abs: float,
     initial_balance: float,
     risk_per_trade: float,
     compounding: bool,
@@ -325,7 +375,15 @@ def account_simulation(
     for row in rows:
         if row.get("market_prob_up") is None or row.get("outcome_up") is None:
             continue
-        if not apply_signal_rule(row, edge_min=edge_min, max_vol_5m=max_vol_5m):
+        if not apply_signal_rule(
+            row,
+            edge_min_up=edge_min_up,
+            edge_min_down=edge_min_down,
+            max_vol_5m=max_vol_5m,
+            max_model_prob_up=max_model_prob_up,
+            max_model_prob_down=max_model_prob_down,
+            min_down_mom_1m_abs=min_down_mom_1m_abs,
+        ):
             continue
 
         trade_pnl = float(row.get("trade_pnl") or 0.0)
@@ -366,22 +424,44 @@ def optimize_signal_params(
     train_rows: List[Dict[str, Any]],
     edge_grid: List[float],
     vol_grid: List[float],
+    model_prob_grid: List[float],
     min_trades: int,
+    edge_min_down: float,
+    max_model_prob_down: float,
+    min_down_mom_1m_abs: float,
 ) -> Dict[str, float]:
     best = None
-    for edge_min in edge_grid:
+    for edge_min_up in edge_grid:
         for max_vol_5m in vol_grid:
-            m = trade_metrics(train_rows, edge_min=edge_min, max_vol_5m=max_vol_5m)
-            if m["trades"] < min_trades:
-                continue
-            # Primary objective: cumulative pnl, tie-break by avg pnl then win rate.
-            key = (m["cum_pnl"], m["avg_pnl_on_trades"], m["win_rate"])
-            if best is None or key > best["key"]:
-                best = {"key": key, "edge_min": edge_min, "max_vol_5m": max_vol_5m}
+            for max_model_prob_up in model_prob_grid:
+                m = trade_metrics(
+                    train_rows,
+                    edge_min_up=edge_min_up,
+                    edge_min_down=edge_min_down,
+                    max_vol_5m=max_vol_5m,
+                    max_model_prob_up=max_model_prob_up,
+                    max_model_prob_down=max_model_prob_down,
+                    min_down_mom_1m_abs=min_down_mom_1m_abs,
+                )
+                if m["trades"] < min_trades:
+                    continue
+                # Primary objective: cumulative pnl, tie-break by avg pnl then win rate.
+                key = (m["cum_pnl"], m["avg_pnl_on_trades"], m["win_rate"])
+                if best is None or key > best["key"]:
+                    best = {
+                        "key": key,
+                        "edge_min_up": edge_min_up,
+                        "max_vol_5m": max_vol_5m,
+                        "max_model_prob_up": max_model_prob_up,
+                    }
 
     if best is None:
-        return {"edge_min": 0.11, "max_vol_5m": 0.002}
-    return {"edge_min": float(best["edge_min"]), "max_vol_5m": float(best["max_vol_5m"])}
+        return {"edge_min_up": 0.11, "max_vol_5m": 0.002, "max_model_prob_up": 0.75}
+    return {
+        "edge_min_up": float(best["edge_min_up"]),
+        "max_vol_5m": float(best["max_vol_5m"]),
+        "max_model_prob_up": float(best["max_model_prob_up"]),
+    }
 
 
 def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Dict[str, Any]:
@@ -396,6 +476,9 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
     initial_balance = float(args.initial_balance)
     risk_per_trade = float(args.risk_per_trade)
     compounding = bool(args.compounding)
+    edge_min_down = float(args.signal_edge_min_down)
+    max_model_prob_down = float(args.signal_max_model_prob_down)
+    min_down_mom_1m_abs = float(args.signal_min_down_mom_1m_abs)
 
     if n < train_n + test_n:
         return {
@@ -406,6 +489,7 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
 
     edge_grid = [i / 100 for i in range(0, 31)]
     vol_grid = [0.0015, 0.0018, 0.0020, 0.0022, 0.0025, 0.0030]
+    model_prob_grid = [0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00]
     folds: List[Dict[str, Any]] = []
 
     # Cumulative balance that carries across folds.
@@ -420,11 +504,31 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
             train_rows=train_rows,
             edge_grid=edge_grid,
             vol_grid=vol_grid,
+            model_prob_grid=model_prob_grid,
             min_trades=min_trades,
+            edge_min_down=edge_min_down,
+            max_model_prob_down=max_model_prob_down,
+            min_down_mom_1m_abs=min_down_mom_1m_abs,
         )
 
-        train_m = trade_metrics(train_rows, params["edge_min"], params["max_vol_5m"])
-        test_m = trade_metrics(test_rows, params["edge_min"], params["max_vol_5m"])
+        train_m = trade_metrics(
+            train_rows,
+            params["edge_min_up"],
+            edge_min_down,
+            params["max_vol_5m"],
+            params["max_model_prob_up"],
+            max_model_prob_down,
+            min_down_mom_1m_abs,
+        )
+        test_m = trade_metrics(
+            test_rows,
+            params["edge_min_up"],
+            edge_min_down,
+            params["max_vol_5m"],
+            params["max_model_prob_up"],
+            max_model_prob_down,
+            min_down_mom_1m_abs,
+        )
 
         # Collect per-trade PnL values for the test set so the frontend can
         # replay account simulation with user-chosen balance/risk/compounding.
@@ -432,14 +536,26 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
         for r in test_rows:
             if r.get("market_prob_up") is None or r.get("outcome_up") is None:
                 continue
-            if apply_signal_rule(r, edge_min=params["edge_min"], max_vol_5m=params["max_vol_5m"]):
+            if apply_signal_rule(
+                r,
+                edge_min_up=params["edge_min_up"],
+                edge_min_down=edge_min_down,
+                max_vol_5m=params["max_vol_5m"],
+                max_model_prob_up=params["max_model_prob_up"],
+                max_model_prob_down=max_model_prob_down,
+                min_down_mom_1m_abs=min_down_mom_1m_abs,
+            ):
                 test_trade_pnls.append(float(r.get("trade_pnl") or 0.0))
 
         # Per-fold account sim on test rows (standalone, starting from initial_balance).
         test_account = account_simulation(
             test_rows,
-            edge_min=params["edge_min"],
+            edge_min_up=params["edge_min_up"],
+            edge_min_down=edge_min_down,
             max_vol_5m=params["max_vol_5m"],
+            max_model_prob_up=params["max_model_prob_up"],
+            max_model_prob_down=max_model_prob_down,
+            min_down_mom_1m_abs=min_down_mom_1m_abs,
             initial_balance=initial_balance,
             risk_per_trade=risk_per_trade,
             compounding=compounding,
@@ -448,8 +564,12 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
         # Cumulative account sim: start from the carry-forward balance.
         cumulative_account = account_simulation(
             test_rows,
-            edge_min=params["edge_min"],
+            edge_min_up=params["edge_min_up"],
+            edge_min_down=edge_min_down,
             max_vol_5m=params["max_vol_5m"],
+            max_model_prob_up=params["max_model_prob_up"],
+            max_model_prob_down=max_model_prob_down,
+            min_down_mom_1m_abs=min_down_mom_1m_abs,
             initial_balance=cumulative_balance,
             risk_per_trade=risk_per_trade,
             compounding=compounding,
@@ -476,6 +596,17 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
     test_cum_pnl = float(np.sum([f["test"]["cum_pnl"] for f in folds])) if folds else 0.0
     test_trades = int(np.sum([f["test"]["trades"] for f in folds])) if folds else 0
     test_wins = int(np.sum([f["test"]["wins"] for f in folds])) if folds else 0
+
+    # Aggregate test drawdown in probability points (across all fold test trades in order).
+    test_equity = 0.0
+    test_peak = 0.0
+    test_max_drawdown = 0.0
+    for f in folds:
+        for pnl in f.get("test_trade_pnls", []):
+            test_equity += float(pnl)
+            test_peak = max(test_peak, test_equity)
+            test_max_drawdown = max(test_max_drawdown, test_peak - test_equity)
+    test_max_drawdown_pct = (test_max_drawdown / test_peak) if test_peak > 0 else None
 
     # Aggregate account sim: cumulative balance after all test folds.
     cumulative_net_pnl = cumulative_balance - initial_balance
@@ -504,6 +635,8 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
             "trades": test_trades,
             "wins": test_wins,
             "win_rate": (test_wins / test_trades) if test_trades else 0.0,
+            "max_drawdown": test_max_drawdown,
+            "max_drawdown_pct": float(test_max_drawdown_pct) if test_max_drawdown_pct is not None else None,
         },
         "aggregate_account": {
             "initial_balance": initial_balance,
@@ -525,14 +658,38 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
             "initial_balance": initial_balance,
             "risk_per_trade": risk_per_trade,
             "compounding": compounding,
+            "search_space": {
+                "edge_grid": edge_grid,
+                "vol_grid": vol_grid,
+                "max_model_prob_up_grid": model_prob_grid,
+            },
+            "fixed_side_filters": {
+                "edge_min_down": edge_min_down,
+                "max_model_prob_down": max_model_prob_down,
+                "min_down_mom_1m_abs": min_down_mom_1m_abs,
+            },
         },
     }
 
 
 def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
     fee_buffer = float(args.fee_buffer)
-    signal_edge_min = float(args.signal_edge_min)
+    signal_edge_min_up = float(args.signal_edge_min_up)
+    signal_edge_min_down = float(args.signal_edge_min_down)
     signal_max_vol_5m = float(args.signal_max_vol_5m)
+    signal_max_model_prob_up = float(args.signal_max_model_prob_up)
+    signal_max_model_prob_down = float(args.signal_max_model_prob_down)
+    signal_min_down_mom_1m_abs = float(args.signal_min_down_mom_1m_abs)
+    timeline_start_iso = str(args.timeline_start_iso or "").strip()
+    timeline_end_iso = str(args.timeline_end_iso or "").strip()
+    timeline_start_ts: Optional[int] = None
+    timeline_end_ts: Optional[int] = None
+    if timeline_start_iso:
+        timeline_start_ts = parse_iso(timeline_start_iso)
+    if timeline_end_iso:
+        timeline_end_ts = parse_iso(timeline_end_iso)
+    if timeline_start_ts is not None and timeline_end_ts is not None and timeline_start_ts > timeline_end_ts:
+        raise RuntimeError("timeline-start-iso must be <= timeline-end-iso")
     min_market_volume = float(args.min_market_volume)
     initial_balance = float(args.initial_balance)
     risk_per_trade = float(args.risk_per_trade)
@@ -550,6 +707,14 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
     filtered_events: List[Dict[str, Any]] = []
     for e in events:
         if args.closed_only and not bool(e.get("closed", False)):
+            continue
+        st = e.get("startTime") or e.get("startDate")
+        if not st:
+            continue
+        event_start_ts = parse_iso(st)
+        if timeline_start_ts is not None and event_start_ts < timeline_start_ts:
+            continue
+        if timeline_end_ts is not None and event_start_ts > timeline_end_ts:
             continue
         filtered_events.append(e)
 
@@ -637,19 +802,67 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
         signal = "SKIP"
         pnl = 0.0
         hit = None
-
-        if market_prob_up is not None:
-            edge = model_prob_up - market_prob_up - fee_buffer
-            signal = "TRADE" if (edge > signal_edge_min and features["vol_5m"] <= signal_max_vol_5m) else "SKIP"
+        outcome_side = None
+        outcome_side_label = "-"
+        status = "pending"
+        result = "-"
 
         # Keep only markets with usable pricing and actual traded volume.
         if market_prob_up is None or market_volume <= min_market_volume:
             continue
 
-        if signal == "TRADE" and outcome_up is not None and market_prob_up is not None:
-            # Buy YES at implied probability, then settle to 1/0, minus fee buffer.
-            pnl = float(outcome_up - market_prob_up - fee_buffer)
-            hit = 1 if outcome_up >= 0.5 else 0
+        edge_up = None
+        edge_down = None
+        bet_side = None
+        model_prob_side = None
+        market_prob_side = None
+
+        if market_prob_up is not None:
+            market_prob_up = float(market_prob_up)
+            model_prob_down = 1.0 - model_prob_up
+            market_prob_down = 1.0 - market_prob_up
+            edge_up = model_prob_up - market_prob_up - fee_buffer
+            edge_down = model_prob_down - market_prob_down - fee_buffer
+            if edge_up >= edge_down:
+                bet_side = "UP"
+                edge = edge_up
+                model_prob_side = model_prob_up
+                market_prob_side = market_prob_up
+                side_edge_min = signal_edge_min_up
+                side_max_model_prob = signal_max_model_prob_up
+                side_mom_1m_ok = True
+            else:
+                bet_side = "DOWN"
+                edge = edge_down
+                model_prob_side = model_prob_down
+                market_prob_side = market_prob_down
+                side_edge_min = signal_edge_min_down
+                side_max_model_prob = signal_max_model_prob_down
+                side_mom_1m_ok = features["mom_1m"] <= -signal_min_down_mom_1m_abs
+            signal = (
+                "TRADE"
+                if (
+                    edge > side_edge_min
+                    and features["vol_5m"] <= signal_max_vol_5m
+                    and model_prob_side <= side_max_model_prob
+                    and side_mom_1m_ok
+                )
+                else "SKIP"
+            )
+
+        if outcome_up is not None and market_prob_up is not None and bet_side is not None:
+            # Side-aware potential PnL: this is used by parameter sweeps and walk-forward.
+            outcome_side_label = "UP" if float(outcome_up) >= 0.5 else "DOWN"
+            if bet_side == "DOWN":
+                outcome_side = 1.0 - float(outcome_up)
+                market_side = 1.0 - float(market_prob_up)
+            else:
+                outcome_side = float(outcome_up)
+                market_side = float(market_prob_up)
+            pnl = float(outcome_side - market_side - fee_buffer)
+            hit = 1 if outcome_side >= 0.5 else 0
+            status = "resolved"
+            result = "WIN" if hit == 1 else "LOSS"
 
         row = {
             "slug": slug,
@@ -663,13 +876,22 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
             "mom_3m": features["mom_3m"],
             "vol_5m": features["vol_5m"],
             "regime": regime,
+            "bet_side": bet_side,
             "model_prob_up": model_prob_up,
+            "model_prob_side": model_prob_side,
             "market_prob_up": market_prob_up,
+            "market_prob_side": market_prob_side,
             "market_volume": market_volume,
             "fee_buffer": fee_buffer,
             "edge": edge,
+            "edge_up": edge_up,
+            "edge_down": edge_down,
             "signal": signal,
             "outcome_up": outcome_up,
+            "outcome_side": outcome_side_label,
+            "status": status,
+            "result": result,
+            "trade_pnl_pct": pnl,
             "trade_pnl": pnl,
             "hit": hit,
         }
@@ -682,11 +904,23 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
             writer.writeheader()
             writer.writerows(rows)
 
-    trade_summary = trade_metrics(rows, edge_min=signal_edge_min, max_vol_5m=signal_max_vol_5m)
+    trade_summary = trade_metrics(
+        rows,
+        edge_min_up=signal_edge_min_up,
+        edge_min_down=signal_edge_min_down,
+        max_vol_5m=signal_max_vol_5m,
+        max_model_prob_up=signal_max_model_prob_up,
+        max_model_prob_down=signal_max_model_prob_down,
+        min_down_mom_1m_abs=signal_min_down_mom_1m_abs,
+    )
     account_summary = account_simulation(
         rows,
-        edge_min=signal_edge_min,
+        edge_min_up=signal_edge_min_up,
+        edge_min_down=signal_edge_min_down,
         max_vol_5m=signal_max_vol_5m,
+        max_model_prob_up=signal_max_model_prob_up,
+        max_model_prob_down=signal_max_model_prob_down,
+        min_down_mom_1m_abs=signal_min_down_mom_1m_abs,
         initial_balance=initial_balance,
         risk_per_trade=risk_per_trade,
         compounding=compounding,
@@ -712,8 +946,24 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
             "Fee buffer is modeled as a fixed probability drag per trade.",
         ],
         "signal_params": {
-            "edge_min": signal_edge_min,
+            "edge_min": signal_edge_min_up,
+            "edge_min_up": signal_edge_min_up,
+            "edge_min_down": signal_edge_min_down,
             "max_vol_5m": signal_max_vol_5m,
+            "max_model_prob_up": signal_max_model_prob_up,
+            "max_model_prob_down": signal_max_model_prob_down,
+            "min_down_mom_1m_abs": signal_min_down_mom_1m_abs,
+        },
+        "timeline": {
+            "mode": "fixed" if (timeline_start_ts is not None or timeline_end_ts is not None) else "open",
+            "requested_start_iso": timeline_start_iso or None,
+            "requested_end_iso": timeline_end_iso or None,
+            "requested_start_ts": timeline_start_ts,
+            "requested_end_ts": timeline_end_ts,
+            "start_ts": min((int(r["start_ts"]) for r in rows), default=None),
+            "end_ts": max((int(r["end_ts"]) for r in rows), default=None),
+            "start_iso": utc_iso(min((int(r["start_ts"]) for r in rows), default=0)) if rows else None,
+            "end_iso": utc_iso(max((int(r["end_ts"]) for r in rows), default=0)) if rows else None,
         },
         "account_sim": account_summary,
         "filters": {
@@ -743,8 +993,42 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-open", action="store_true", help="Include currently open markets")
     parser.add_argument("--refresh", action="store_true", help="Refresh cached API/candle data")
     parser.add_argument("--max-events", type=int, default=0, help="If >0, backtest only the most recent N events")
-    parser.add_argument("--signal-edge-min", type=float, default=float(os.getenv("SIGNAL_EDGE_MIN", "0.11")))
+    parser.add_argument(
+        "--signal-edge-min-up",
+        type=float,
+        default=float(os.getenv("SIGNAL_EDGE_MIN_UP", os.getenv("SIGNAL_EDGE_MIN", "0.11"))),
+    )
+    parser.add_argument(
+        "--signal-edge-min-down",
+        type=float,
+        default=float(os.getenv("SIGNAL_EDGE_MIN_DOWN", "0.18")),
+    )
     parser.add_argument("--signal-max-vol-5m", type=float, default=float(os.getenv("SIGNAL_MAX_VOL_5M", "0.002")))
+    parser.add_argument(
+        "--signal-max-model-prob-up",
+        type=float,
+        default=float(os.getenv("SIGNAL_MAX_MODEL_PROB_UP", "0.75")),
+    )
+    parser.add_argument(
+        "--signal-max-model-prob-down",
+        type=float,
+        default=float(os.getenv("SIGNAL_MAX_MODEL_PROB_DOWN", "1.0")),
+    )
+    parser.add_argument(
+        "--signal-min-down-mom-1m-abs",
+        type=float,
+        default=float(os.getenv("SIGNAL_MIN_DOWN_MOM_1M_ABS", "0.003")),
+    )
+    parser.add_argument(
+        "--timeline-start-iso",
+        default=os.getenv("BACKTEST_TIMELINE_START_ISO", ""),
+        help="Only include events with startTime >= this ISO timestamp (UTC).",
+    )
+    parser.add_argument(
+        "--timeline-end-iso",
+        default=os.getenv("BACKTEST_TIMELINE_END_ISO", ""),
+        help="Only include events with startTime <= this ISO timestamp (UTC).",
+    )
     parser.add_argument(
         "--min-market-volume",
         type=float,

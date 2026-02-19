@@ -1,17 +1,17 @@
 {
   "series_slug": "btc-up-or-down-5m",
-  "generated_at": "2026-02-17T17:11:14.054909+00:00",
-  "events_total": 1200,
-  "rows_evaluated": 1200,
-  "trades": 186,
-  "trade_rate": 0.155,
-  "wins": 102,
-  "win_rate": 0.5483870967741935,
-  "avg_edge_on_trades": 0.2002727493012342,
-  "avg_pnl_on_trades": 0.014516129032258022,
-  "cum_pnl": 2.699999999999992,
-  "max_drawdown": 7.375000000000003,
-  "max_drawdown_pct": 1.1015683345780451,
+  "generated_at": "2026-02-18T22:31:50.312757+00:00",
+  "events_total": 1201,
+  "rows_evaluated": 1201,
+  "trades": 206,
+  "trade_rate": 0.17152373022481265,
+  "wins": 121,
+  "win_rate": 0.587378640776699,
+  "avg_edge_on_trades": 0.21177588740219988,
+  "avg_pnl_on_trades": 0.05674757281553395,
+  "cum_pnl": 11.689999999999994,
+  "max_drawdown": 3.9400000000000075,
+  "max_drawdown_pct": 0.3138191955396269,
   "notes": [
     "BTC features are approximated from 1-minute Binance US candles, not 5-second ticks.",
     "Market implied probability is taken from CLOB prices-history nearest to market startTime (fallback near end).",
@@ -19,7 +19,40 @@
   ],
   "signal_params": {
     "edge_min": 0.11,
-    "max_vol_5m": 0.002
+    "edge_min_up": 0.11,
+    "edge_min_down": 0.08,
+    "max_vol_5m": 0.0022,
+    "max_model_prob_up": 0.75,
+    "max_model_prob_down": 1.0,
+    "min_down_mom_1m_abs": 0.003
+  },
+  "timeline": {
+    "mode": "fixed",
+    "requested_start_iso": "2026-02-13T12:30:00+00:00",
+    "requested_end_iso": "2026-02-17T16:30:00+00:00",
+    "requested_start_ts": 1770985800,
+    "requested_end_ts": 1771345800,
+    "start_ts": 1770985800,
+    "end_ts": 1771346100,
+    "start_iso": "2026-02-13T12:30:00+00:00",
+    "end_iso": "2026-02-17T16:35:00+00:00"
+  },
+  "account_sim": {
+    "initial_balance": 10000.0,
+    "ending_balance": 12506.598268800817,
+    "net_pnl": 2506.598268800817,
+    "roi": 0.2506598268800817,
+    "trades": 206,
+    "wins": 121,
+    "win_rate": 0.587378640776699,
+    "risk_per_trade": 0.02,
+    "compounding": true,
+    "max_drawdown": 889.3443628335044,
+    "max_drawdown_pct": 0.06978563090444839
+  },
+  "filters": {
+    "require_market_prob": true,
+    "min_market_volume": 0.0
   },
   "walk_forward": {
     "ok": true,
@@ -30,29 +63,76 @@
         "test_start_iso": "2026-02-15T14:30:00+00:00",
         "test_end_iso": "2026-02-16T00:25:00+00:00",
         "params": {
-          "edge_min": 0.12,
-          "max_vol_5m": 0.002
+          "edge_min_up": 0.12,
+          "max_vol_5m": 0.0022,
+          "max_model_prob_up": 0.75
         },
         "train": {
           "trades": 86,
-          "wins": 48,
-          "win_rate": 0.5581395348837209,
-          "avg_edge_on_trades": 0.21234888938966331,
-          "avg_pnl_on_trades": 0.025406976744186002,
-          "cum_pnl": 2.184999999999996,
-          "max_drawdown": 4.630000000000003,
-          "max_drawdown_pct": 0.6793837123991208
+          "wins": 51,
+          "win_rate": 0.5930232558139535,
+          "avg_edge_on_trades": 0.2157349505096186,
+          "avg_pnl_on_trades": 0.06249999999999995,
+          "cum_pnl": 5.374999999999996,
+          "max_drawdown": 2.350000000000003,
+          "max_drawdown_pct": 0.3214774281805753
         },
         "test": {
-          "trades": 20,
-          "wins": 10,
-          "win_rate": 0.5,
-          "avg_edge_on_trades": 0.16272963087732534,
-          "avg_pnl_on_trades": -0.03450000000000003,
-          "cum_pnl": -0.6900000000000006,
-          "max_drawdown": 2.2100000000000004,
-          "max_drawdown_pct": 1.5241379310344838
-        }
+          "trades": 31,
+          "wins": 17,
+          "win_rate": 0.5483870967741935,
+          "avg_edge_on_trades": 0.20531243994393458,
+          "avg_pnl_on_trades": 0.017258064516128997,
+          "cum_pnl": 0.5349999999999989,
+          "max_drawdown": 2.4200000000000004,
+          "max_drawdown_pct": 1.1308411214953278
+        },
+        "test_account": {
+          "initial_balance": 10000.0,
+          "ending_balance": 10092.01924206198,
+          "net_pnl": 92.01924206198055,
+          "roi": 0.009201924206198055,
+          "trades": 31,
+          "wins": 17,
+          "win_rate": 0.5483870967741935,
+          "risk_per_trade": 0.02,
+          "compounding": true,
+          "max_drawdown": 488.58678666758897,
+          "max_drawdown_pct": 0.04687569016987887
+        },
+        "test_trade_pnls": [
+          0.475,
+          0.475,
+          -0.525,
+          0.475,
+          -0.525,
+          -0.525,
+          -0.535,
+          -0.525,
+          0.46499999999999997,
+          0.475,
+          0.46499999999999997,
+          -0.535,
+          0.475,
+          -0.535,
+          -0.535,
+          -0.535,
+          0.475,
+          0.46499999999999997,
+          0.46499999999999997,
+          0.46499999999999997,
+          0.46499999999999997,
+          -0.535,
+          0.46499999999999997,
+          0.46499999999999997,
+          0.475,
+          -0.525,
+          0.46499999999999997,
+          0.46499999999999997,
+          -0.535,
+          -0.535,
+          -0.535
+        ]
       },
       {
         "train_start_iso": "2026-02-13T22:30:00+00:00",
@@ -60,29 +140,48 @@
         "test_start_iso": "2026-02-16T00:30:00+00:00",
         "test_end_iso": "2026-02-16T10:25:00+00:00",
         "params": {
-          "edge_min": 0.12,
-          "max_vol_5m": 0.0015
+          "edge_min_up": 0.29,
+          "max_vol_5m": 0.0015,
+          "max_model_prob_up": 1.0
         },
         "train": {
-          "trades": 84,
-          "wins": 44,
-          "win_rate": 0.5238095238095238,
-          "avg_edge_on_trades": 0.1971630553604003,
-          "avg_pnl_on_trades": -0.009404761904761947,
-          "cum_pnl": -0.7900000000000036,
-          "max_drawdown": 6.8400000000000025,
-          "max_drawdown_pct": 1.5099337748344381
+          "trades": 42,
+          "wins": 27,
+          "win_rate": 0.6428571428571429,
+          "avg_edge_on_trades": 0.3220738149598463,
+          "avg_pnl_on_trades": 0.1158333333333333,
+          "cum_pnl": 4.864999999999998,
+          "max_drawdown": 1.6250000000000013,
+          "max_drawdown_pct": 0.30148423005565905
         },
         "test": {
-          "trades": 12,
-          "wins": 6,
-          "win_rate": 0.5,
-          "avg_edge_on_trades": 0.17758773517338247,
-          "avg_pnl_on_trades": -0.03500000000000004,
-          "cum_pnl": -0.4200000000000005,
-          "max_drawdown": 2.7450000000000006,
-          "max_drawdown_pct": 1.180645161290323
-        }
+          "trades": 3,
+          "wins": 2,
+          "win_rate": 0.6666666666666666,
+          "avg_edge_on_trades": 0.2230445209191073,
+          "avg_pnl_on_trades": 0.1383333333333333,
+          "cum_pnl": 0.4149999999999999,
+          "max_drawdown": 0.535,
+          "max_drawdown_pct": 0.5631578947368422
+        },
+        "test_account": {
+          "initial_balance": 10000.0,
+          "ending_balance": 10081.85984325,
+          "net_pnl": 81.85984325000027,
+          "roi": 0.008185984325000027,
+          "trades": 3,
+          "wins": 2,
+          "win_rate": 0.6666666666666666,
+          "risk_per_trade": 0.02,
+          "compounding": true,
+          "max_drawdown": 109.04265674999988,
+          "max_drawdown_pct": 0.010699999999999987
+        },
+        "test_trade_pnls": [
+          0.475,
+          0.475,
+          -0.535
+        ]
       },
       {
         "train_start_iso": "2026-02-14T08:30:00+00:00",
@@ -90,29 +189,62 @@
         "test_start_iso": "2026-02-16T10:30:00+00:00",
         "test_end_iso": "2026-02-16T20:25:00+00:00",
         "params": {
-          "edge_min": 0.17,
-          "max_vol_5m": 0.0015
+          "edge_min_up": 0.17,
+          "max_vol_5m": 0.0015,
+          "max_model_prob_up": 0.75
         },
         "train": {
-          "trades": 53,
-          "wins": 28,
-          "win_rate": 0.5283018867924528,
-          "avg_edge_on_trades": 0.22537827618594802,
-          "avg_pnl_on_trades": -0.005377358490566078,
-          "cum_pnl": -0.28500000000000214,
-          "max_drawdown": 4.49,
-          "max_drawdown_pct": 3.8706896551724164
+          "trades": 68,
+          "wins": 41,
+          "win_rate": 0.6029411764705882,
+          "avg_edge_on_trades": 0.25563907903523186,
+          "avg_pnl_on_trades": 0.07338235294117645,
+          "cum_pnl": 4.989999999999998,
+          "max_drawdown": 2.539999999999999,
+          "max_drawdown_pct": 0.5019762845849802
         },
         "test": {
-          "trades": 15,
-          "wins": 7,
-          "win_rate": 0.4666666666666667,
-          "avg_edge_on_trades": 0.26357140932071904,
-          "avg_pnl_on_trades": -0.0676666666666667,
-          "cum_pnl": -1.0150000000000003,
-          "max_drawdown": 2.745,
-          "max_drawdown_pct": 1.5867052023121393
-        }
+          "trades": 17,
+          "wins": 10,
+          "win_rate": 0.5882352941176471,
+          "avg_edge_on_trades": 0.2508180244592777,
+          "avg_pnl_on_trades": 0.05970588235294116,
+          "cum_pnl": 1.0149999999999997,
+          "max_drawdown": 1.1800000000000002,
+          "max_drawdown_pct": 0.5375854214123008
+        },
+        "test_account": {
+          "initial_balance": 10000.0,
+          "ending_balance": 10196.48687818138,
+          "net_pnl": 196.48687818138023,
+          "roi": 0.019648687818138024,
+          "trades": 17,
+          "wins": 10,
+          "win_rate": 0.5882352941176471,
+          "risk_per_trade": 0.02,
+          "compounding": true,
+          "max_drawdown": 246.77943120852797,
+          "max_drawdown_pct": 0.023630483404089762
+        },
+        "test_trade_pnls": [
+          0.475,
+          -0.525,
+          0.475,
+          0.475,
+          0.475,
+          0.475,
+          -0.535,
+          -0.535,
+          0.475,
+          0.46499999999999997,
+          0.475,
+          -0.525,
+          0.46499999999999997,
+          -0.535,
+          -0.535,
+          0.475,
+          -0.525
+        ]
       },
       {
         "train_start_iso": "2026-02-14T18:30:00+00:00",
@@ -120,29 +252,55 @@
         "test_start_iso": "2026-02-16T20:30:00+00:00",
         "test_end_iso": "2026-02-17T06:25:00+00:00",
         "params": {
-          "edge_min": 0.22,
-          "max_vol_5m": 0.0015
+          "edge_min_up": 0.28,
+          "max_vol_5m": 0.0018,
+          "max_model_prob_up": 1.0
         },
         "train": {
-          "trades": 24,
-          "wins": 15,
-          "win_rate": 0.625,
-          "avg_edge_on_trades": 0.29306247021823767,
-          "avg_pnl_on_trades": 0.09041666666666663,
-          "cum_pnl": 2.169999999999999,
-          "max_drawdown": 2.7450000000000006,
-          "max_drawdown_pct": 0.8472222222222228
+          "trades": 55,
+          "wins": 38,
+          "win_rate": 0.6909090909090909,
+          "avg_edge_on_trades": 0.31487577158594726,
+          "avg_pnl_on_trades": 0.16390909090909087,
+          "cum_pnl": 9.014999999999997,
+          "max_drawdown": 1.6249999999999996,
+          "max_drawdown_pct": 0.1694473409801877
         },
         "test": {
-          "trades": 4,
-          "wins": 1,
-          "win_rate": 0.25,
-          "avg_edge_on_trades": 0.28556430832598334,
-          "avg_pnl_on_trades": -0.28500000000000003,
-          "cum_pnl": -1.1400000000000001,
-          "max_drawdown": 1.605,
-          "max_drawdown_pct": 3.4516129032258065
-        }
+          "trades": 10,
+          "wins": 4,
+          "win_rate": 0.4,
+          "avg_edge_on_trades": 0.28511538386541824,
+          "avg_pnl_on_trades": -0.127,
+          "cum_pnl": -1.27,
+          "max_drawdown": 2.16,
+          "max_drawdown_pct": 5.204819277108435
+        },
+        "test_account": {
+          "initial_balance": 10000.0,
+          "ending_balance": 9744.162219906042,
+          "net_pnl": -255.83778009395792,
+          "roi": -0.02558377800939579,
+          "trades": 10,
+          "wins": 4,
+          "win_rate": 0.4,
+          "risk_per_trade": 0.02,
+          "compounding": true,
+          "max_drawdown": 429.3960295738816,
+          "max_drawdown_pct": 0.04259095407494387
+        },
+        "test_trade_pnls": [
+          -0.535,
+          0.475,
+          0.475,
+          -0.535,
+          -0.525,
+          -0.525,
+          -0.525,
+          0.475,
+          -0.525,
+          0.475
+        ]
       },
       {
         "train_start_iso": "2026-02-15T04:30:00+00:00",
@@ -150,42 +308,146 @@
         "test_start_iso": "2026-02-17T06:30:00+00:00",
         "test_end_iso": "2026-02-17T16:25:00+00:00",
         "params": {
-          "edge_min": 0.22,
-          "max_vol_5m": 0.0015
+          "edge_min_up": 0.1,
+          "max_vol_5m": 0.0018,
+          "max_model_prob_up": 0.7
         },
         "train": {
-          "trades": 21,
-          "wins": 11,
-          "win_rate": 0.5238095238095238,
-          "avg_edge_on_trades": 0.28062722899841885,
-          "avg_pnl_on_trades": -0.010714285714285746,
-          "cum_pnl": -0.22500000000000064,
-          "max_drawdown": 2.2100000000000004,
-          "max_drawdown_pct": 1.1133501259445848
+          "trades": 99,
+          "wins": 61,
+          "win_rate": 0.6161616161616161,
+          "avg_edge_on_trades": 0.21712385767558567,
+          "avg_pnl_on_trades": 0.08601010101010098,
+          "cum_pnl": 8.514999999999997,
+          "max_drawdown": 3.3200000000000007,
+          "max_drawdown_pct": 0.33860275369709353
         },
         "test": {
-          "trades": 5,
-          "wins": 4,
-          "win_rate": 0.8,
-          "avg_edge_on_trades": 0.25986972859618385,
-          "avg_pnl_on_trades": 0.262,
-          "cum_pnl": 1.31,
-          "max_drawdown": 0.5449999999999999,
-          "max_drawdown_pct": 0.2938005390835579
-        }
+          "trades": 15,
+          "wins": 10,
+          "win_rate": 0.6666666666666666,
+          "avg_edge_on_trades": 0.25041524058498893,
+          "avg_pnl_on_trades": 0.1383333333333333,
+          "cum_pnl": 2.0749999999999997,
+          "max_drawdown": 1.06,
+          "max_drawdown_pct": 0.4092664092664092
+        },
+        "test_account": {
+          "initial_balance": 10000.0,
+          "ending_balance": 10416.221779193764,
+          "net_pnl": 416.2217791937637,
+          "roi": 0.04162217791937637,
+          "trades": 15,
+          "wins": 10,
+          "win_rate": 0.6666666666666666,
+          "risk_per_trade": 0.02,
+          "compounding": true,
+          "max_drawdown": 218.30603007577702,
+          "max_drawdown_pct": 0.020742403776153065
+        },
+        "test_trade_pnls": [
+          -0.535,
+          0.46499999999999997,
+          -0.525,
+          0.475,
+          0.46499999999999997,
+          0.46499999999999997,
+          0.46499999999999997,
+          0.475,
+          -0.525,
+          -0.535,
+          0.475,
+          0.475,
+          0.475,
+          0.475,
+          -0.515
+        ]
       }
     ],
     "fold_count": 5,
     "aggregate_test": {
-      "cum_pnl": -1.9550000000000018,
-      "trades": 56,
-      "wins": 28,
-      "win_rate": 0.5
+      "cum_pnl": 2.7699999999999982,
+      "trades": 76,
+      "wins": 43,
+      "win_rate": 0.5657894736842105
+    },
+    "aggregate_account": {
+      "initial_balance": 10000.0,
+      "ending_balance": 10529.89435172765,
+      "net_pnl": 529.8943517276493,
+      "roi": 0.052989435172764936,
+      "trades": 76,
+      "wins": 43,
+      "win_rate": 0.5657894736842105,
+      "risk_per_trade": 0.02,
+      "compounding": true,
+      "max_drawdown": 255.83778009395792,
+      "max_drawdown_pct": 0.024294355198132403
     },
     "config": {
       "train_rows": 600,
       "test_rows": 120,
-      "min_trades": 20
+      "min_trades": 20,
+      "initial_balance": 10000.0,
+      "risk_per_trade": 0.02,
+      "compounding": true,
+      "search_space": {
+        "edge_grid": [
+          0.0,
+          0.01,
+          0.02,
+          0.03,
+          0.04,
+          0.05,
+          0.06,
+          0.07,
+          0.08,
+          0.09,
+          0.1,
+          0.11,
+          0.12,
+          0.13,
+          0.14,
+          0.15,
+          0.16,
+          0.17,
+          0.18,
+          0.19,
+          0.2,
+          0.21,
+          0.22,
+          0.23,
+          0.24,
+          0.25,
+          0.26,
+          0.27,
+          0.28,
+          0.29,
+          0.3
+        ],
+        "vol_grid": [
+          0.0015,
+          0.0018,
+          0.002,
+          0.0022,
+          0.0025,
+          0.003
+        ],
+        "max_model_prob_up_grid": [
+          0.7,
+          0.75,
+          0.8,
+          0.85,
+          0.9,
+          0.95,
+          1.0
+        ]
+      },
+      "fixed_side_filters": {
+        "edge_min_down": 0.08,
+        "max_model_prob_down": 1.0,
+        "min_down_mom_1m_abs": 0.003
+      }
     }
   }
 }

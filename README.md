@@ -16,6 +16,18 @@ cp config.example.env .env
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+Windows PowerShell activation:
+
+```powershell
+cd backend
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item config.example.env .env
+notepad .env
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
 Health check:
 
 ```bash
@@ -29,6 +41,11 @@ cd frontend
 npm install
 npm run dev
 ```
+
+Notes:
+- In dev, the frontend defaults to calling `http://localhost:8000` unless `VITE_API_BASE` is set.
+- You can also create `frontend/.env.local` from `frontend/.env.example` and set `VITE_API_BASE` explicitly.
+- Strategy knobs live in `backend/.env` (for example: `SIGNAL_EDGE_MIN_UP`, `SIGNAL_EDGE_MIN_DOWN`, `SIGNAL_MAX_VOL_5M`, `SIGNAL_MAX_MODEL_PROB_UP`, `SIGNAL_MAX_MODEL_PROB_DOWN`, `SIGNAL_MIN_DOWN_MOM_1M_ABS`).
 
 Open:
 - `http://localhost:5173`
@@ -51,6 +68,14 @@ pip install -r requirements.txt
 cp config.example.env .env
 # set POLYMARKET_API_KEY in .env
 python backtest.py --out-dir backtest_results --refresh
+```
+
+For apples-to-apples strategy comparisons, pin a fixed timeline:
+
+```bash
+python backtest.py --out-dir backtest_results \
+  --timeline-start-iso 2026-02-13T12:30:00+00:00 \
+  --timeline-end-iso 2026-02-17T16:30:00+00:00
 ```
 
 Outputs:
@@ -81,21 +106,78 @@ git push -u origin main
 flyctl auth login
 ```
 
-2) Backend deploy:
+2) Single-app deploy (backend serves the built frontend):
 
 ```bash
-cd backend
-# Set unique app name in fly.toml (replace REPLACE_WITH_BACKEND_APP_NAME)
-flyctl launch --no-deploy --copy-config --ha=false
-flyctl secrets set POLYMARKET_SLUG=<YOUR_SLUG> FEE_BUFFER=0.03 FRONTEND_ORIGIN=https://<YOUR_FRONTEND_APP>.fly.dev
+cd btc-polymarket-signal-app
+# fly.toml is at repo root; it builds using backend/Dockerfile (which also builds the frontend).
+# If you want a different Fly app name, edit fly.toml: app = "..."
+flyctl secrets set POLYMARKET_SLUG=<YOUR_SLUG> FEE_BUFFER=0.03
 flyctl deploy
 ```
 
-3) Frontend deploy:
+Optional but recommended for consistent strategy comparisons:
 
 ```bash
-cd frontend
-# Set unique app name in fly.toml (replace REPLACE_WITH_FRONTEND_APP_NAME)
-flyctl launch --no-deploy --copy-config --ha=false
-flyctl deploy --build-arg VITE_API_BASE=https://<YOUR_BACKEND_APP>.fly.dev
+flyctl secrets set BACKTEST_TIMELINE_START_ISO=2026-02-13T12:30:00+00:00 BACKTEST_TIMELINE_END_ISO=2026-02-17T16:30:00+00:00
 ```
+
+## Live Trading Mode (Polymarket CLOB)
+
+The app now supports an optional live execution mode with fail-closed defaults:
+- `LIVE_TRADING_ENABLED=false` by default.
+- Runtime arm switch (`/live/arm`) is required unless you explicitly set `LIVE_AUTO_ARM=true`.
+- Kill switch (`/live/kill`) can stop new entries instantly.
+
+Required secrets (minimum):
+
+```bash
+flyctl secrets set \
+  POLYMARKET_SLUG=btc-updown-5m-auto \
+  POLYMARKET_PRIVATE_KEY=<YOUR_PRIVATE_KEY> \
+  POLYMARKET_CHAIN_ID=137 \
+  POLYMARKET_SIGNATURE_TYPE=2 \
+  LIVE_TRADING_ENABLED=true \
+  LIVE_AUTO_ARM=false \
+  LIVE_KILL_SWITCH=false
+```
+
+Recommended guardrails:
+
+```bash
+flyctl secrets set \
+  LIVE_ORDER_USD=25 \
+  LIVE_MAX_ORDER_USD=100 \
+  LIVE_MAX_OPEN_NOTIONAL_USD=200 \
+  LIVE_MAX_DAILY_LOSS_USD=100 \
+  LIVE_MAX_TRADES_PER_DAY=30 \
+  LIVE_COOLDOWN_SECONDS=20 \
+  LIVE_MAX_ENTRY_PRICE=0.92
+```
+
+Live control endpoints:
+
+```bash
+# status
+curl https://<app>.fly.dev/live/state
+
+# enable/disable live execution gate
+curl -X POST https://<app>.fly.dev/live/enabled -H "Content-Type: application/json" -d "{\"enabled\":true}"
+curl -X POST https://<app>.fly.dev/live/enabled -H "Content-Type: application/json" -d "{\"enabled\":false}"
+
+# arm/disarm
+curl -X POST https://<app>.fly.dev/live/arm -H "Content-Type: application/json" -d "{\"armed\":true}"
+curl -X POST https://<app>.fly.dev/live/arm -H "Content-Type: application/json" -d "{\"armed\":false}"
+
+# kill switch on/off
+curl -X POST https://<app>.fly.dev/live/kill -H "Content-Type: application/json" -d "{\"kill_switch\":true}"
+curl -X POST https://<app>.fly.dev/live/kill -H "Content-Type: application/json" -d "{\"kill_switch\":false}"
+
+# temporary pause (seconds)
+curl -X POST https://<app>.fly.dev/live/pause -H "Content-Type: application/json" -d "{\"seconds\":600}"
+```
+
+Notes:
+- Live account balance shown in UI is fetched from Polymarket CLOB (`get_balance_allowance`) and refreshed periodically.
+- If your account API returns integer collateral units, tune `LIVE_ACCOUNT_DECIMALS` (default `6`) to match the reported units.
+- Start with very small `LIVE_ORDER_USD` and verify order behavior in your own account before scaling.
