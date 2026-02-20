@@ -40,10 +40,10 @@ def _params(
 
 REGIME_PROFILES: Dict[str, Dict[str, Dict[str, float]]] = {
     "balanced": {
-        # Anchor "balanced" to the legacy profitable baseline, then modulate by regime.
+        # Strict balanced profile.
         "trend": _params(0.11, 0.18, 0.0020, 0.75, 1.00, 0.0030, 1.00),
         "chop": _params(0.12, 0.20, 0.0019, 0.73, 0.92, 0.0035, 0.80),
-        "vol_spike": _params(0.15, 0.24, 0.0018, 0.70, 0.88, 0.0045, 0.55),
+        "vol_spike": _params(0.15, 0.24, 0.0024, 0.70, 0.88, 0.0045, 0.55),
     },
     "conservative": {
         "trend": _params(0.13, 0.22, 0.0019, 0.72, 0.90, 0.0035, 0.80),

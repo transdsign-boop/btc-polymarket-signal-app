@@ -53,6 +53,13 @@ MODEL_CALIBRATION_BINS = max(4, int(os.getenv("MODEL_CALIBRATION_BINS", "12")))
 MODEL_CALIBRATION_MIN_SAMPLES = max(20, int(os.getenv("MODEL_CALIBRATION_MIN_SAMPLES", "80")))
 MODEL_CALIBRATION_LAPLACE_ALPHA = max(0.0, float(os.getenv("MODEL_CALIBRATION_LAPLACE_ALPHA", "2.0")))
 MODEL_CALIBRATION_MAX_BLEND = max(0.0, min(1.0, float(os.getenv("MODEL_CALIBRATION_MAX_BLEND", "0.35"))))
+MODEL_SIDE_CALIBRATION_ENABLED = os.getenv("MODEL_SIDE_CALIBRATION_ENABLED", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "y",
+    "on",
+)
 SIGNAL_EDGE_MIN_UP = float(os.getenv("SIGNAL_EDGE_MIN_UP", os.getenv("SIGNAL_EDGE_MIN", "0.11")))
 SIGNAL_EDGE_MIN_DOWN = float(os.getenv("SIGNAL_EDGE_MIN_DOWN", "0.18"))
 SIGNAL_MAX_VOL_5M = float(os.getenv("SIGNAL_MAX_VOL_5M", "0.002"))
@@ -119,6 +126,8 @@ LIVE_STALE_TRADE_SECONDS = int(os.getenv("LIVE_STALE_TRADE_SECONDS", "7200"))
 LIVE_ACCOUNT_INITIAL_BALANCE = float(os.getenv("LIVE_ACCOUNT_INITIAL_BALANCE", "0"))
 LIVE_ACCOUNT_SYNC_SECONDS = max(5, int(os.getenv("LIVE_ACCOUNT_SYNC_SECONDS", "15")))
 LIVE_ACCOUNT_DECIMALS = max(0, int(os.getenv("LIVE_ACCOUNT_DECIMALS", "6")))
+LIVE_ACCOUNT_REBASE_MIN_ABS_USD = max(0.0, float(os.getenv("LIVE_ACCOUNT_REBASE_MIN_ABS_USD", "25")))
+LIVE_ACCOUNT_REBASE_MIN_REL = max(0.0, float(os.getenv("LIVE_ACCOUNT_REBASE_MIN_REL", "0.5")))
 LIVE_LATENCY_TESTS_MAX = max(10, int(os.getenv("LIVE_LATENCY_TESTS_MAX", "300")))
 LIVE_CLOB_MAX_PRICE = float(os.getenv("LIVE_CLOB_MAX_PRICE", "0.99"))
 LIVE_POLY_PRIVATE_KEY = os.getenv("POLYMARKET_PRIVATE_KEY", os.getenv("POLYMARKET_API_KEY", "")).strip()
@@ -143,6 +152,11 @@ LIVE_AUTO_CLAIM_MAX_ATTEMPTS = max(1, int(os.getenv("LIVE_AUTO_CLAIM_MAX_ATTEMPT
 POLY_5M_SLUG_PREFIX = "btc-updown-5m-"
 POLY_5M_WINDOW_SECONDS = 300
 BACKTEST_REFRESH_TIMEOUT_SECONDS = max(30, int(os.getenv("BACKTEST_REFRESH_TIMEOUT_SECONDS", "900")))
+BACKTEST_TIMELINE_START_ISO = os.getenv("BACKTEST_TIMELINE_START_ISO", "").strip()
+BACKTEST_TIMELINE_END_ISO = os.getenv("BACKTEST_TIMELINE_END_ISO", "").strip()
+BACKTEST_TIMELINE_AUTO_EXTEND_END = _env_bool("BACKTEST_TIMELINE_AUTO_EXTEND_END", True)
+BACKTEST_AUTO_REFRESH = _env_bool("BACKTEST_AUTO_REFRESH", bool(os.getenv("FLY_APP_NAME")))
+BACKTEST_AUTO_REFRESH_SECONDS = max(300, int(os.getenv("BACKTEST_AUTO_REFRESH_SECONDS", "1800")))
 
 _live_lock = threading.Lock()
 _live_client_lock = threading.Lock()
@@ -150,6 +164,7 @@ _live_client_cache: Any = None
 _live_client_cache_signature_type: Optional[int] = None
 _claim_client_lock = threading.Lock()
 _claim_client_cache: Any = None
+_backtest_refresh_lock = threading.Lock()
 
 
 def _fresh_paper_state() -> Dict[str, Any]:
@@ -261,37 +276,50 @@ def _save_strategy_config(cfg: Dict[str, Any]) -> None:
 
 
 def _run_backtest_refresh() -> Dict[str, Any]:
+    if not _backtest_refresh_lock.acquire(blocking=False):
+        return {"ok": False, "error": "backtest refresh already running"}
+
     script = Path(__file__).resolve().parent / "backtest.py"
     started = time.time()
     try:
-        proc = subprocess.run(
-            [sys.executable, str(script), "--out-dir", str(BACKTEST_DIR)],
-            cwd=str(script.parent),
-            capture_output=True,
-            text=True,
-            timeout=BACKTEST_REFRESH_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except Exception as exc:
-        return {"ok": False, "error": f"backtest launch failed: {exc}"}
+        cmd = [sys.executable, str(script), "--out-dir", str(BACKTEST_DIR)]
+        if not MODEL_SIDE_CALIBRATION_ENABLED:
+            cmd.append("--disable-side-calibration")
+        if BACKTEST_TIMELINE_START_ISO:
+            cmd.extend(["--timeline-start-iso", BACKTEST_TIMELINE_START_ISO])
+        if BACKTEST_TIMELINE_END_ISO and not BACKTEST_TIMELINE_AUTO_EXTEND_END:
+            cmd.extend(["--timeline-end-iso", BACKTEST_TIMELINE_END_ISO])
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=str(script.parent),
+                capture_output=True,
+                text=True,
+                timeout=BACKTEST_REFRESH_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except Exception as exc:
+            return {"ok": False, "error": f"backtest launch failed: {exc}"}
 
-    elapsed_ms = int((time.time() - started) * 1000)
-    stdout_tail = "\n".join((proc.stdout or "").splitlines()[-12:])
-    stderr_tail = "\n".join((proc.stderr or "").splitlines()[-12:])
-    if proc.returncode != 0:
+        elapsed_ms = int((time.time() - started) * 1000)
+        stdout_tail = "\n".join((proc.stdout or "").splitlines()[-12:])
+        stderr_tail = "\n".join((proc.stderr or "").splitlines()[-12:])
+        if proc.returncode != 0:
+            return {
+                "ok": False,
+                "returncode": proc.returncode,
+                "elapsed_ms": elapsed_ms,
+                "stdout_tail": stdout_tail,
+                "stderr_tail": stderr_tail,
+            }
         return {
-            "ok": False,
+            "ok": True,
             "returncode": proc.returncode,
             "elapsed_ms": elapsed_ms,
             "stdout_tail": stdout_tail,
-            "stderr_tail": stderr_tail,
         }
-    return {
-        "ok": True,
-        "returncode": proc.returncode,
-        "elapsed_ms": elapsed_ms,
-        "stdout_tail": stdout_tail,
-    }
+    finally:
+        _backtest_refresh_lock.release()
 
 
 def _current_strategy_values() -> tuple[float, bool]:
@@ -889,6 +917,11 @@ def _bootstrap_model_calibration_from_backtest_rows() -> Optional[Dict[str, Any]
 
 def _load_model_calibration() -> Optional[Dict[str, Any]]:
     global _calibration_cache_mtime, _calibration_cache_payload, _calibration_bootstrap_attempt_ts
+    if not MODEL_SIDE_CALIBRATION_ENABLED:
+        with _calibration_lock:
+            _calibration_cache_mtime = None
+            _calibration_cache_payload = None
+        return None
     try:
         mtime = MODEL_CALIBRATION_FILE.stat().st_mtime
     except OSError:
@@ -1727,6 +1760,38 @@ def _sync_live_account_from_api(live: Dict[str, Any], force: bool = False) -> bo
             if not isinstance(account, dict):
                 account = {}
                 live["account"] = account
+            tracked_start = _safe_float(account.get("starting_balance_usd"))
+            tracked_balance = _safe_float(account.get("balance_usd"))
+            if (
+                api_start is not None
+                and api_start > 0
+                and tracked_start is not None
+                and tracked_balance is not None
+                and tracked_balance > 0
+            ):
+                drift_abs = float(chosen_parsed) - float(tracked_balance)
+                drift_rel = drift_abs / float(tracked_balance)
+                if (
+                    drift_abs >= LIVE_ACCOUNT_REBASE_MIN_ABS_USD
+                    and drift_rel >= LIVE_ACCOUNT_REBASE_MIN_REL
+                ):
+                    # Preserve realized PnL while rebasing the fixed non-compounding baseline
+                    # when external funding makes tracked balance stale.
+                    resolved_pnl = float(tracked_balance) - float(tracked_start)
+                    rebased_start = max(0.0, float(chosen_parsed) - resolved_pnl)
+                    account_api["starting_balance_usd"] = round(rebased_start, 6)
+                    api_start = rebased_start
+                    _append_live_event(
+                        live,
+                        "warn",
+                        "live account baseline rebased from API drift",
+                        {
+                            "api_balance_usd": round(float(chosen_parsed), 6),
+                            "tracked_balance_usd": round(float(tracked_balance), 6),
+                            "old_starting_balance_usd": round(float(tracked_start), 6),
+                            "new_starting_balance_usd": round(float(rebased_start), 6),
+                        },
+                    )
             if api_start is not None and api_start > 0:
                 account["starting_balance_usd"] = round(float(api_start), 6)
         account_api["balance_signature_type"] = chosen_sig
@@ -2535,19 +2600,15 @@ def _maybe_enter_live_trade(live: Dict[str, Any], state: Dict[str, Any]) -> Dict
     if account_balance is None or account_balance <= 0:
         return {"executed": False, "reason": "missing_account_balance"}
 
-    strategy_risk_pct, strategy_compounding = _current_strategy_values()
+    strategy_risk_pct, _strategy_compounding = _current_strategy_values()
     signal_params = state.get("signal_params") if isinstance(state.get("signal_params"), dict) else {}
     risk_multiplier = _safe_float(signal_params.get("risk_multiplier"))
     if risk_multiplier is None:
         risk_multiplier = 1.0
     risk_multiplier = max(0.0, min(2.0, float(risk_multiplier)))
     risk_frac = max(0.0, min(1.0, (strategy_risk_pct / 100.0) * risk_multiplier))
-    fixed_base_balance = _safe_float(account_api.get("starting_balance_usd"))
-    if fixed_base_balance is None or fixed_base_balance <= 0:
-        fixed_base_balance = _safe_float(account.get("starting_balance_usd"))
-    if fixed_base_balance is None or fixed_base_balance <= 0:
-        fixed_base_balance = float(account_balance)
-    sizing_base = float(account_balance) if strategy_compounding else min(float(fixed_base_balance), float(account_balance))
+    # Live sizing always uses current API balance as base so stake tracks real account equity.
+    sizing_base = float(account_balance)
     amount_usd = sizing_base * risk_frac
     if LIVE_MAX_ORDER_USD > 0:
         amount_usd = min(float(amount_usd), float(LIVE_MAX_ORDER_USD))
@@ -2592,6 +2653,7 @@ def _maybe_enter_live_trade(live: Dict[str, Any], state: Dict[str, Any]) -> Dict
             "fee_buffer": float(state.get("fee_buffer") or 0.03),
             "risk_multiplier": risk_multiplier,
             "risk_fraction_used": risk_frac,
+            "sizing_base_usd": round(float(sizing_base), 6),
             "requested_stake_usd": round(amount_usd, 4),
             "stake_usd": round(float(effective_stake), 2),
             "contracts_target": round(float(contracts_target), 6),
@@ -2641,6 +2703,7 @@ def _maybe_enter_live_trade(live: Dict[str, Any], state: Dict[str, Any]) -> Dict
         "fee_buffer": float(state.get("fee_buffer") or 0.03),
         "risk_multiplier": risk_multiplier,
         "risk_fraction_used": risk_frac,
+        "sizing_base_usd": round(float(sizing_base), 6),
         "requested_stake_usd": round(amount_usd, 4),
         "stake_usd": round(float(effective_stake), 2),
         "contracts_target": round(float(contracts_target), 6),
@@ -2761,7 +2824,7 @@ def classify_regime(features: Dict[str, float]) -> str:
     mom_3m = abs(features.get("mom_3m", 0.0))
     vol_5m = features.get("vol_5m", 0.0)
 
-    if vol_5m > 0.0025:
+    if vol_5m > 0.0018:
         return "Vol Spike"
     if mom_3m > 0.0015 or mom_1m > 0.0010:
         return "Trend"
@@ -3600,12 +3663,23 @@ def _auto_tick_loop() -> None:
         time.sleep(AUTO_TICK_SECONDS)
 
 
+def _auto_backtest_refresh_loop() -> None:
+    while True:
+        try:
+            _run_backtest_refresh()
+        except Exception:
+            pass
+        time.sleep(BACKTEST_AUTO_REFRESH_SECONDS)
+
+
 @app.on_event("startup")
 def _startup() -> None:
-    if not AUTO_TICK:
-        return
-    t = threading.Thread(target=_auto_tick_loop, daemon=True)
-    t.start()
+    if AUTO_TICK:
+        t = threading.Thread(target=_auto_tick_loop, daemon=True)
+        t.start()
+    if BACKTEST_AUTO_REFRESH:
+        bt = threading.Thread(target=_auto_backtest_refresh_loop, daemon=True)
+        bt.start()
 
 
 if (FRONTEND_DIST_DIR / "assets").exists():

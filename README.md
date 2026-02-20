@@ -45,7 +45,7 @@ npm run dev
 Notes:
 - In dev, the frontend defaults to calling `http://localhost:8000` unless `VITE_API_BASE` is set.
 - You can also create `frontend/.env.local` from `frontend/.env.example` and set `VITE_API_BASE` explicitly.
-- Strategy knobs live in `backend/.env` (for example: `SIGNAL_EDGE_MIN_UP`, `SIGNAL_EDGE_MIN_DOWN`, `SIGNAL_MAX_VOL_5M`, `SIGNAL_MAX_MODEL_PROB_UP`, `SIGNAL_MAX_MODEL_PROB_DOWN`, `SIGNAL_MIN_DOWN_MOM_1M_ABS`).
+- Strategy knobs live in `backend/.env` (for example: `STRATEGY_REGIME_PROFILE`, `STRATEGY_RISK_PCT`, `STRATEGY_COMPOUNDING`, `MODEL_SIDE_CALIBRATION_ENABLED`).
 
 Open:
 - `http://localhost:5173`
@@ -76,6 +76,13 @@ For apples-to-apples strategy comparisons, pin a fixed timeline:
 python backtest.py --out-dir backtest_results \
   --timeline-start-iso 2026-02-13T12:30:00+00:00 \
   --timeline-end-iso 2026-02-17T16:30:00+00:00
+```
+
+For a fixed start that auto-extends to the latest available markets over time:
+
+```bash
+python backtest.py --out-dir backtest_results \
+  --timeline-start-iso 2026-02-13T12:30:00+00:00
 ```
 
 Outputs:
@@ -116,10 +123,14 @@ flyctl secrets set POLYMARKET_SLUG=<YOUR_SLUG> FEE_BUFFER=0.03
 flyctl deploy
 ```
 
-Optional but recommended for consistent strategy comparisons:
+Optional but recommended for continuously relevant comparisons (fixed start + rolling end):
 
 ```bash
-flyctl secrets set BACKTEST_TIMELINE_START_ISO=2026-02-13T12:30:00+00:00 BACKTEST_TIMELINE_END_ISO=2026-02-17T16:30:00+00:00
+flyctl secrets set \
+  BACKTEST_TIMELINE_START_ISO=2026-02-13T12:30:00+00:00 \
+  BACKTEST_TIMELINE_AUTO_EXTEND_END=true \
+  BACKTEST_AUTO_REFRESH=true \
+  BACKTEST_AUTO_REFRESH_SECONDS=1800
 ```
 
 ## Live Trading Mode (Polymarket CLOB)

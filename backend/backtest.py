@@ -146,11 +146,23 @@ class HTTP:
 
 def fetch_series_events(http: HTTP, cache_dir: Path, refresh: bool) -> List[Dict[str, Any]]:
     cache_file = cache_dir / "series_btc_up_or_down_5m.json"
-    if cache_file.exists() and not refresh:
-        data = json.loads(cache_file.read_text())
-    else:
-        data = http.get_json(GAMMA_SERIES_URL, params={"slug": SERIES_SLUG})
-        cache_file.write_text(json.dumps(data))
+    cached_data: Any = None
+    if cache_file.exists():
+        try:
+            cached_data = json.loads(cache_file.read_text())
+        except Exception:
+            cached_data = None
+
+    # Keep series fresh by default so new events are discovered over time.
+    fetch_latest = refresh or env_bool("BACKTEST_REFRESH_SERIES_ALWAYS", True)
+    data = cached_data
+    if fetch_latest or data is None:
+        try:
+            data = http.get_json(GAMMA_SERIES_URL, params={"slug": SERIES_SLUG})
+            cache_file.write_text(json.dumps(data))
+        except Exception:
+            if data is None:
+                raise
 
     if not isinstance(data, list) or not data:
         raise RuntimeError("Unexpected response from /series")
@@ -249,43 +261,60 @@ def pick_price_at_or_before(history: List[Dict[str, Any]], ts: int) -> Optional[
 
 def fetch_binance_1m_range(start_ts: int, end_ts: int, cache_file: Path, refresh: bool) -> Dict[int, float]:
     # Maps minute timestamp (epoch seconds) -> close price.
-    if cache_file.exists() and not refresh:
-        payload = json.loads(cache_file.read_text())
-        return {int(k): float(v) for k, v in payload.items()}
-
     out: Dict[int, float] = {}
+    if cache_file.exists():
+        try:
+            payload = json.loads(cache_file.read_text())
+            if isinstance(payload, dict):
+                out = {int(k): float(v) for k, v in payload.items()}
+        except Exception:
+            out = {}
 
-    start_ms = start_ts * 1000
-    end_ms = end_ts * 1000
+    if refresh:
+        out = {}
 
-    cursor = start_ms
-    while cursor <= end_ms:
-        params = {
-            "symbol": "BTCUSDT",
-            "interval": "1m",
-            "limit": 1000,
-            "startTime": cursor,
-            "endTime": end_ms,
-        }
-        resp = requests.get(BINANCE_US_KLINES_URL, params=params, timeout=30)
-        resp.raise_for_status()
-        rows = resp.json()
-        if not isinstance(rows, list) or not rows:
-            break
+    def _fetch_segment(seg_start_ts: int, seg_end_ts: int) -> None:
+        if seg_start_ts > seg_end_ts:
+            return
+        cursor = seg_start_ts * 1000
+        end_ms = seg_end_ts * 1000
+        while cursor <= end_ms:
+            params = {
+                "symbol": "BTCUSDT",
+                "interval": "1m",
+                "limit": 1000,
+                "startTime": cursor,
+                "endTime": end_ms,
+            }
+            resp = requests.get(BINANCE_US_KLINES_URL, params=params, timeout=30)
+            resp.raise_for_status()
+            rows = resp.json()
+            if not isinstance(rows, list) or not rows:
+                break
 
-        for row in rows:
-            # [openTime, open, high, low, close, volume, closeTime, ...]
-            open_ms = int(row[0])
-            close_price = safe_float(row[4])
-            if close_price is not None:
-                out[open_ms // 1000] = close_price
+            for row in rows:
+                # [openTime, open, high, low, close, volume, closeTime, ...]
+                open_ms = int(row[0])
+                close_price = safe_float(row[4])
+                if close_price is not None:
+                    out[open_ms // 1000] = close_price
 
-        last_open_ms = int(rows[-1][0])
-        cursor = last_open_ms + 60_000
-        time.sleep(0.02)
+            last_open_ms = int(rows[-1][0])
+            cursor = last_open_ms + 60_000
+            time.sleep(0.02)
 
-    cache_file.write_text(json.dumps({str(k): v for k, v in out.items()}))
-    return out
+    if not out:
+        _fetch_segment(start_ts, end_ts)
+    else:
+        cached_min = min(out.keys())
+        cached_max = max(out.keys())
+        if start_ts < cached_min:
+            _fetch_segment(start_ts, cached_min - 60)
+        if end_ts > cached_max:
+            _fetch_segment(cached_max + 60, end_ts)
+
+    cache_file.write_text(json.dumps({str(k): v for k, v in sorted(out.items())}))
+    return {k: v for k, v in out.items() if start_ts <= k <= end_ts}
 
 
 def minute_window_series(close_by_minute: Dict[int, float], eval_ts: int, points: int = 60) -> Optional[List[float]]:
@@ -314,7 +343,7 @@ def classify_regime(features: Dict[str, float]) -> str:
     mom_1m = abs(features["mom_1m"])
     mom_3m = abs(features["mom_3m"])
     vol_5m = features["vol_5m"]
-    if vol_5m > 0.0025:
+    if vol_5m > 0.0018:
         return "Vol Spike"
     if mom_3m > 0.0015 or mom_1m > 0.0010:
         return "Trend"
@@ -656,6 +685,48 @@ def account_simulation(
         "max_drawdown": max_drawdown,
         "max_drawdown_pct": float(max_drawdown_pct) if max_drawdown_pct is not None else None,
     }
+
+
+def annotate_position_sizing_rows(
+    rows: List[Dict[str, Any]],
+    regime_profile: str,
+    initial_balance: float,
+    risk_per_trade: float,
+    compounding: bool,
+) -> None:
+    balance = float(initial_balance)
+    base_balance = float(initial_balance)
+    r = max(0.0, min(float(risk_per_trade), 1.0))
+
+    for row in rows:
+        row["position_size_usd"] = None
+        row["position_sizing_base_usd"] = None
+        row["position_risk_fraction"] = None
+        row["position_balance_before_usd"] = None
+        row["position_balance_after_usd"] = None
+        row["position_pnl_usd"] = None
+
+        if str(row.get("signal") or "").upper() != "TRADE":
+            continue
+
+        params = regime_params(regime_profile, row.get("regime"))
+        risk_mult = max(0.0, min(float(params.get("risk_multiplier", 1.0)), 2.0))
+        effective_r = max(0.0, min(1.0, r * risk_mult))
+        sizing_base = balance if compounding else min(base_balance, balance)
+        stake = max(0.0, min(sizing_base * effective_r, balance))
+
+        trade_pnl = float(row.get("trade_pnl") or 0.0)
+        pnl_usd = stake * trade_pnl
+        balance_after = balance + pnl_usd
+
+        row["position_size_usd"] = stake
+        row["position_sizing_base_usd"] = sizing_base
+        row["position_risk_fraction"] = effective_r
+        row["position_balance_before_usd"] = balance
+        row["position_balance_after_usd"] = balance_after
+        row["position_pnl_usd"] = pnl_usd
+
+        balance = balance_after
 
 
 def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Dict[str, Any]:
@@ -1052,6 +1123,14 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
         apply_calibration_to_rows(rows, regime_profile=regime_profile, calibration=calibration)
         calibration_file.write_text(json.dumps(calibration, indent=2))
 
+    annotate_position_sizing_rows(
+        rows,
+        regime_profile=regime_profile,
+        initial_balance=initial_balance,
+        risk_per_trade=risk_per_trade,
+        compounding=compounding,
+    )
+
     csv_file = out_dir / "backtest_rows.csv"
     with csv_file.open("w", newline="") as f:
         if rows:
@@ -1105,7 +1184,11 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
             "regime_profile": regime_profile,
         },
         "timeline": {
-            "mode": "fixed" if (timeline_start_ts is not None or timeline_end_ts is not None) else "open",
+            "mode": (
+                "rolling_from_start"
+                if (timeline_start_ts is not None and timeline_end_ts is None)
+                else ("fixed" if (timeline_start_ts is not None or timeline_end_ts is not None) else "open")
+            ),
             "requested_start_iso": timeline_start_iso or None,
             "requested_end_iso": timeline_end_iso or None,
             "requested_start_ts": timeline_start_ts,
@@ -1145,12 +1228,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--regime-profile", default=None, choices=["balanced", "conservative", "aggressive"])
     parser.add_argument(
         "--timeline-start-iso",
-        default=os.getenv("BACKTEST_TIMELINE_START_ISO", ""),
+        default=None,
         help="Only include events with startTime >= this ISO timestamp (UTC).",
     )
     parser.add_argument(
         "--timeline-end-iso",
-        default=os.getenv("BACKTEST_TIMELINE_END_ISO", ""),
+        default=None,
         help="Only include events with startTime <= this ISO timestamp (UTC).",
     )
     parser.add_argument(
@@ -1202,8 +1285,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wf-min-trades", type=int, default=20)
     parser.add_argument(
         "--disable-side-calibration",
+        dest="disable_side_calibration",
         action="store_true",
         help="Disable side-specific model probability calibration and use raw probabilities.",
+    )
+    parser.add_argument(
+        "--enable-side-calibration",
+        dest="disable_side_calibration",
+        action="store_false",
+        help="Enable side-specific model probability calibration.",
     )
     parser.add_argument(
         "--calibration-bins",
@@ -1229,10 +1319,24 @@ def parse_args() -> argparse.Namespace:
         default=float(os.getenv("MODEL_CALIBRATION_MAX_BLEND", "0.35")),
         help="Maximum blend of calibrated probability into raw model probability (0-1).",
     )
+    parser.set_defaults(disable_side_calibration=not env_bool("MODEL_SIDE_CALIBRATION_ENABLED", False))
     args = parser.parse_args()
 
     if args.include_open:
         args.closed_only = False
+    env_timeline_start_iso = os.getenv("BACKTEST_TIMELINE_START_ISO", "").strip()
+    env_timeline_end_iso = os.getenv("BACKTEST_TIMELINE_END_ISO", "").strip()
+    auto_extend_end = env_bool("BACKTEST_TIMELINE_AUTO_EXTEND_END", True)
+    if args.timeline_start_iso is None:
+        args.timeline_start_iso = env_timeline_start_iso
+    if args.timeline_end_iso is None:
+        # Fixed start + rolling end keeps the comparison window current over time.
+        if auto_extend_end and str(args.timeline_start_iso or "").strip():
+            args.timeline_end_iso = ""
+        else:
+            args.timeline_end_iso = env_timeline_end_iso
+    args.timeline_start_iso = str(args.timeline_start_iso or "").strip()
+    args.timeline_end_iso = str(args.timeline_end_iso or "").strip()
     if args.regime_profile is None:
         args.regime_profile = default_regime_profile(args.out_dir)
     args.regime_profile = normalize_profile(args.regime_profile)

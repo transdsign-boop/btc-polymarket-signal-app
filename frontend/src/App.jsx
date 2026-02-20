@@ -312,12 +312,6 @@ export default function App() {
     }
   }, [])
 
-  const filteredBacktestRows = useMemo(() => {
-    const rows = backtestRows || []
-    if (backtestSignalFilter === 'ALL') return rows
-    return rows.filter((r) => String(r.signal || '').toUpperCase() === backtestSignalFilter)
-  }, [backtestRows, backtestSignalFilter])
-
   useEffect(() => {
     let active = true
     const loadPaper = async () => {
@@ -807,6 +801,39 @@ export default function App() {
       max_drawdown_pct: peak > 0 ? maxDrawdown / peak : null,
     }
   }, [backtestRows, simInitialBalance, strategyRiskPct, strategyCompounding])
+
+  const backtestRowsWithSimSizing = useMemo(() => {
+    const rows = Array.isArray(backtestRows) ? [...backtestRows] : []
+    const startBalance = Number(simInitialBalance)
+    const riskFraction = Math.max(0, Math.min(100, Number(strategyRiskPct))) / 100
+    if (!Number.isFinite(startBalance) || startBalance <= 0) {
+      return rows.map((row) => ({ ...row, _sim_position_size_usd: null }))
+    }
+
+    rows.sort((a, b) => Number(a.start_ts || 0) - Number(b.start_ts || 0))
+    let balance = startBalance
+
+    return rows.map((row) => {
+      const out = { ...row, _sim_position_size_usd: null }
+      if (String(row.signal || '').toUpperCase() !== 'TRADE') return out
+
+      const multRaw = Number(row.risk_multiplier ?? 1)
+      const riskMult = Number.isFinite(multRaw) ? Math.max(0, Math.min(2, multRaw)) : 1
+      const effectiveRisk = Math.max(0, Math.min(1, riskFraction * riskMult))
+      const stakeBase = strategyCompounding ? balance : Math.min(startBalance, balance)
+      const stake = Math.max(0, Math.min(balance, stakeBase * effectiveRisk))
+      const tradePnl = Number(row.trade_pnl || 0)
+      balance += stake * tradePnl
+      out._sim_position_size_usd = stake
+      return out
+    })
+  }, [backtestRows, simInitialBalance, strategyRiskPct, strategyCompounding])
+
+  const filteredBacktestRows = useMemo(() => {
+    const rows = backtestRowsWithSimSizing || []
+    if (backtestSignalFilter === 'ALL') return rows
+    return rows.filter((r) => String(r.signal || '').toUpperCase() === backtestSignalFilter)
+  }, [backtestRowsWithSimSizing, backtestSignalFilter])
 
   const liveSummary = liveState?.summary || null
   const liveTrades = liveState?.trades || []
@@ -1492,7 +1519,11 @@ export default function App() {
                 : 'Unbounded (latest available history)'}
             </div>
             <div className="mt-1 text-xs text-slate-500">
-              {backtestSummary.timeline?.mode === 'fixed' ? 'Pinned window for apples-to-apples strategy comparison' : 'Window is not pinned'}
+              {backtestSummary.timeline?.mode === 'fixed'
+                ? 'Pinned window for apples-to-apples strategy comparison'
+                : backtestSummary.timeline?.mode === 'rolling_from_start'
+                  ? 'Start is pinned; end auto-extends with latest data'
+                  : 'Window is not pinned'}
             </div>
           </article>
         </section>
@@ -1638,6 +1669,7 @@ export default function App() {
                 <th className="px-3 py-2 text-left">Bet</th>
                 <th className="px-3 py-2 text-left">Outcome</th>
                 <th className="px-3 py-2 text-left">Edge</th>
+                <th className="px-3 py-2 text-right">Position (USD)</th>
                 <th className="px-3 py-2 text-right">Fill Px</th>
                 <th className="px-3 py-2 text-right">Fill vs Mkt</th>
                 <th className="px-3 py-2 text-left">Status</th>
@@ -1649,6 +1681,7 @@ export default function App() {
               {filteredBacktestRows.map((row) => {
                 const fillPx = asNum(row.fill_price) ?? asNum(row.market_prob_side)
                 const fillDiff = fillPx != null && asNum(row.market_prob_side) != null ? 0 : null
+                const positionSize = asNum(row._sim_position_size_usd ?? row.position_size_usd)
                 return (
                   <tr key={row.slug} className="border-t border-slate-800">
                     <td className="px-3 py-2 font-mono text-xs text-slate-400">
@@ -1669,6 +1702,7 @@ export default function App() {
                       {row.outcome_side || sideFromOutcome(Number(row.outcome_up))}
                     </td>
                     <td className="px-3 py-2">{pct(Number(row.edge))}</td>
+                    <td className="px-3 py-2 text-right text-slate-200">{positionSize != null ? usd(positionSize) : '-'}</td>
                     <td className="px-3 py-2 text-right text-slate-200">{fillPx != null ? pct(fillPx) : '-'}</td>
                     <td className="px-3 py-2 text-right text-slate-400">{fillDiff != null ? pp(fillDiff) : '-'}</td>
                     <td className={`px-3 py-2 ${row.status === 'pending' ? 'text-amber-400' : row.status === 'resolved' ? 'text-slate-200' : 'text-slate-500'}`}>
@@ -1679,6 +1713,7 @@ export default function App() {
                     </td>
                     <td className={`px-3 py-2 ${(Number(row.trade_pnl) || 0) >= 0 ? 'text-emerald-400' : 'text-red-300'}`}>
                       {pct(Number(row.trade_pnl))}
+                      {positionSize != null ? ` / ${usd(positionSize)}` : ''}
                     </td>
                   </tr>
                 )
