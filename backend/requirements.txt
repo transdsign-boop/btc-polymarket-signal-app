@@ -4,3 +4,7 @@ requests
 python-dotenv
 numpy
 py-clob-client
+py-builder-relayer-client
+py-builder-signing-sdk
+eth-account
+eth-abi

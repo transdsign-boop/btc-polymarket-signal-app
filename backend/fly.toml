@@ -1,5 +1,5 @@
 app = "btc-poly-backend-02170733"
-primary_region = "iad"
+primary_region = "ams"
 
 [build]
   dockerfile = "Dockerfile"

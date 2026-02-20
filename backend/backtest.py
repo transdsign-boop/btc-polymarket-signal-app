@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import requests
 from dotenv import load_dotenv
+from regime_policy import REGIME_PROFILE_DEFAULT, normalize_profile, policy_snapshot, regime_params
 
 load_dotenv()
 
@@ -57,6 +58,64 @@ def sigmoid(x: float) -> float:
 
 def clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
+
+
+def env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "")
+    if not raw:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _strategy_config_path(out_dir: str) -> Path:
+    return Path(out_dir).resolve().parent / "strategy_config.json"
+
+
+def _load_strategy_config_from_file(out_dir: str) -> Dict[str, Any]:
+    path = _strategy_config_path(out_dir)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def default_risk_per_trade(out_dir: str) -> float:
+    strategy_file = _load_strategy_config_from_file(out_dir)
+    file_pct = safe_float(strategy_file.get("risk_per_trade_pct"))
+    if file_pct is not None:
+        return max(0.0, min(float(file_pct) / 100.0, 1.0))
+
+    shared_pct = os.getenv("STRATEGY_RISK_PCT", os.getenv("PAPER_RISK_PCT", "")).strip()
+    if shared_pct:
+        return max(0.0, min(float(shared_pct) / 100.0, 1.0))
+    return max(0.0, min(float(os.getenv("RISK_PER_TRADE", "0.02")), 1.0))
+
+
+def default_compounding(out_dir: str) -> bool:
+    strategy_file = _load_strategy_config_from_file(out_dir)
+    if "compounding" in strategy_file:
+        raw = strategy_file.get("compounding")
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, str):
+            return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    if os.getenv("STRATEGY_COMPOUNDING", "").strip():
+        return env_bool("STRATEGY_COMPOUNDING", True)
+    if os.getenv("PAPER_COMPOUNDING", "").strip():
+        return env_bool("PAPER_COMPOUNDING", True)
+    return True
+
+
+def default_regime_profile(out_dir: str) -> str:
+    strategy_file = _load_strategy_config_from_file(out_dir)
+    raw = strategy_file.get("regime_profile")
+    if raw is None:
+        raw = os.getenv("STRATEGY_REGIME_PROFILE", REGIME_PROFILE_DEFAULT)
+    return normalize_profile(raw)
 
 
 class HTTP:
@@ -262,15 +321,8 @@ def classify_regime(features: Dict[str, float]) -> str:
     return "Chop"
 
 
-def apply_signal_rule(
-    row: Dict[str, Any],
-    edge_min_up: float,
-    edge_min_down: float,
-    max_vol_5m: float,
-    max_model_prob_up: float,
-    max_model_prob_down: float,
-    min_down_mom_1m_abs: float,
-) -> bool:
+def apply_signal_rule(row: Dict[str, Any], regime_profile: str) -> bool:
+    params = regime_params(regime_profile, row.get("regime"))
     edge = row.get("edge")
     vol = row.get("vol_5m")
     model_prob_side = row.get("model_prob_side")
@@ -279,42 +331,237 @@ def apply_signal_rule(
         bet_side = "UP"
     if edge is None or vol is None or model_prob_side is None:
         return False
-    if float(vol) > max_vol_5m:
+    if float(vol) > float(params["max_vol_5m"]):
         return False
     if bet_side == "DOWN":
         mom_1m = safe_float(row.get("mom_1m"))
         if mom_1m is None:
             return False
         return (
-            float(edge) > edge_min_down
-            and float(model_prob_side) <= max_model_prob_down
-            and float(mom_1m) <= -float(min_down_mom_1m_abs)
+            float(edge) > float(params["edge_min_down"])
+            and float(model_prob_side) <= float(params["max_model_prob_down"])
+            and float(mom_1m) <= -float(params["min_down_mom_1m_abs"])
         )
-    return float(edge) > edge_min_up and float(model_prob_side) <= max_model_prob_up
+    return float(edge) > float(params["edge_min_up"]) and float(model_prob_side) <= float(params["max_model_prob_up"])
 
 
-def trade_metrics(
+def build_side_calibration(
     rows: List[Dict[str, Any]],
-    edge_min_up: float,
-    edge_min_down: float,
-    max_vol_5m: float,
-    max_model_prob_up: float,
-    max_model_prob_down: float,
-    min_down_mom_1m_abs: float,
+    num_bins: int = 12,
+    min_samples: int = 80,
+    laplace_alpha: float = 2.0,
+    max_blend: float = 0.35,
 ) -> Dict[str, Any]:
+    bins_n = max(4, int(num_bins))
+    min_n = max(20, int(min_samples))
+    alpha = max(0.0, float(laplace_alpha))
+    blend_cap = max(0.0, min(1.0, float(max_blend)))
+
+    out: Dict[str, Any] = {
+        "version": 1,
+        "method": "binned_laplace",
+        "num_bins": bins_n,
+        "min_samples": min_n,
+        "laplace_alpha": alpha,
+        "max_blend": blend_cap,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "sides": {},
+    }
+
+    for side in ("UP", "DOWN"):
+        raw_bins: List[Dict[str, Any]] = []
+        for idx in range(bins_n):
+            lo = idx / bins_n
+            hi = (idx + 1) / bins_n
+            raw_bins.append({"lo": lo, "hi": hi, "count": 0, "wins": 0.0})
+
+        sample_count = 0
+        for row in rows:
+            row_side = str(row.get("bet_side") or "UP").upper()
+            if row_side != side:
+                continue
+            prob = safe_float(row.get("model_prob_side"))
+            outcome_up = safe_float(row.get("outcome_up"))
+            if prob is None or outcome_up is None:
+                continue
+            prob = clamp01(float(prob))
+            idx = min(int(prob * bins_n), bins_n - 1)
+            hit = 1.0 if ((side == "UP" and outcome_up >= 0.5) or (side == "DOWN" and outcome_up < 0.5)) else 0.0
+            raw_bins[idx]["count"] += 1
+            raw_bins[idx]["wins"] += hit
+            sample_count += 1
+
+        bins: List[Dict[str, Any]] = []
+        for b in raw_bins:
+            count = int(b["count"])
+            wins = float(b["wins"])
+            cal_prob = ((wins + alpha) / (count + 2 * alpha)) if count > 0 else None
+            bins.append(
+                {
+                    "lo": float(b["lo"]),
+                    "hi": float(b["hi"]),
+                    "mid": float((b["lo"] + b["hi"]) / 2.0),
+                    "count": count,
+                    "wins": wins,
+                    "cal_prob": float(cal_prob) if cal_prob is not None else None,
+                }
+            )
+
+        out["sides"][side] = {
+            "sample_count": sample_count,
+            "enabled": sample_count >= min_n,
+            "bins": bins,
+        }
+
+    return out
+
+
+def apply_side_calibration(prob: Optional[float], side: str, calibration: Optional[Dict[str, Any]]) -> Optional[float]:
+    if prob is None:
+        return None
+    p = clamp01(float(prob))
+    if not isinstance(calibration, dict):
+        return p
+
+    sides = calibration.get("sides")
+    if not isinstance(sides, dict):
+        return p
+    side_key = str(side or "").upper()
+    side_cfg = sides.get(side_key)
+    if not isinstance(side_cfg, dict) or not bool(side_cfg.get("enabled")):
+        return p
+
+    bins = side_cfg.get("bins")
+    if not isinstance(bins, list) or not bins:
+        return p
+    num_bins = max(1, int(calibration.get("num_bins") or len(bins)))
+    idx = min(int(p * num_bins), len(bins) - 1)
+    cal = safe_float((bins[idx] or {}).get("cal_prob")) if isinstance(bins[idx], dict) else None
+    if cal is None:
+        for radius in range(1, len(bins)):
+            left = idx - radius
+            right = idx + radius
+            if left >= 0 and isinstance(bins[left], dict):
+                cal = safe_float(bins[left].get("cal_prob"))
+                if cal is not None:
+                    break
+            if right < len(bins) and isinstance(bins[right], dict):
+                cal = safe_float(bins[right].get("cal_prob"))
+                if cal is not None:
+                    break
+    if cal is None:
+        return p
+
+    min_samples = max(1.0, float(calibration.get("min_samples") or 1.0))
+    max_blend = max(0.0, min(1.0, float(calibration.get("max_blend") or 0.35)))
+    sample_count = max(0.0, float(side_cfg.get("sample_count") or 0.0))
+    blend = max_blend * min(1.0, sample_count / (3.0 * min_samples))
+    return clamp01((1.0 - blend) * p + blend * float(cal))
+
+
+def apply_calibration_to_rows(
+    rows: List[Dict[str, Any]],
+    regime_profile: str,
+    calibration: Optional[Dict[str, Any]],
+) -> None:
+    for row in rows:
+        market_prob_up = safe_float(row.get("market_prob_up"))
+        if market_prob_up is None:
+            continue
+        market_prob_up = clamp01(float(market_prob_up))
+        market_prob_down = 1.0 - market_prob_up
+        fee_buffer = float(safe_float(row.get("fee_buffer")) or 0.0)
+
+        raw_up = safe_float(row.get("model_prob_up_raw"))
+        if raw_up is None:
+            raw_up = safe_float(row.get("model_prob_up"))
+        if raw_up is None:
+            continue
+        raw_up = clamp01(float(raw_up))
+        raw_down = clamp01(1.0 - raw_up)
+
+        cal_up = apply_side_calibration(raw_up, "UP", calibration)
+        cal_down = apply_side_calibration(raw_down, "DOWN", calibration)
+        if cal_up is None or cal_down is None:
+            continue
+
+        row["model_prob_up_raw"] = raw_up
+        row["model_prob_down_raw"] = raw_down
+        row["model_prob_up"] = cal_up
+        row["model_prob_down"] = cal_down
+
+        edge_up = float(cal_up - market_prob_up - fee_buffer)
+        edge_down = float(cal_down - market_prob_down - fee_buffer)
+        if edge_up >= edge_down:
+            bet_side = "UP"
+            edge = edge_up
+            model_prob_side = cal_up
+            market_prob_side = market_prob_up
+            params = regime_params(regime_profile, row.get("regime"))
+            side_edge_min = float(params["edge_min_up"])
+            side_max_model_prob = float(params["max_model_prob_up"])
+            side_mom_1m_ok = True
+        else:
+            bet_side = "DOWN"
+            edge = edge_down
+            model_prob_side = cal_down
+            market_prob_side = market_prob_down
+            params = regime_params(regime_profile, row.get("regime"))
+            side_edge_min = float(params["edge_min_down"])
+            side_max_model_prob = float(params["max_model_prob_down"])
+            side_mom_1m_ok = float(safe_float(row.get("mom_1m")) or 0.0) <= -float(params["min_down_mom_1m_abs"])
+
+        signal = (
+            "TRADE"
+            if (
+                edge > side_edge_min
+                and float(safe_float(row.get("vol_5m")) or 0.0) <= float(params["max_vol_5m"])
+                and model_prob_side <= side_max_model_prob
+                and side_mom_1m_ok
+            )
+            else "SKIP"
+        )
+
+        outcome_up = safe_float(row.get("outcome_up"))
+        outcome_side_label = "-"
+        pnl = 0.0
+        hit = None
+        status = "pending"
+        result = "-"
+        if outcome_up is not None:
+            outcome_side_label = "UP" if float(outcome_up) >= 0.5 else "DOWN"
+            if bet_side == "DOWN":
+                outcome_side = 1.0 - float(outcome_up)
+                market_side = market_prob_down
+            else:
+                outcome_side = float(outcome_up)
+                market_side = market_prob_up
+            pnl = float(outcome_side - market_side - fee_buffer)
+            hit = 1 if outcome_side >= 0.5 else 0
+            status = "resolved"
+            result = "WIN" if hit == 1 else "LOSS"
+
+        row["bet_side"] = bet_side
+        row["model_prob_side"] = model_prob_side
+        row["market_prob_side"] = market_prob_side
+        row["edge"] = edge
+        row["edge_up"] = edge_up
+        row["edge_down"] = edge_down
+        row["signal"] = signal
+        row["outcome_side"] = outcome_side_label
+        row["status"] = status
+        row["result"] = result
+        row["trade_pnl_pct"] = pnl
+        row["trade_pnl"] = pnl
+        row["hit"] = hit
+
+
+def trade_metrics(rows: List[Dict[str, Any]], regime_profile: str) -> Dict[str, Any]:
     trades: List[Dict[str, Any]] = []
     for r in rows:
         if r.get("market_prob_up") is None or r.get("outcome_up") is None:
             continue
-        if apply_signal_rule(
-            r,
-            edge_min_up=edge_min_up,
-            edge_min_down=edge_min_down,
-            max_vol_5m=max_vol_5m,
-            max_model_prob_up=max_model_prob_up,
-            max_model_prob_down=max_model_prob_down,
-            min_down_mom_1m_abs=min_down_mom_1m_abs,
-        ):
+        if apply_signal_rule(r, regime_profile=regime_profile):
             trades.append(r)
 
     wins = []
@@ -353,12 +600,7 @@ def trade_metrics(
 
 def account_simulation(
     rows: List[Dict[str, Any]],
-    edge_min_up: float,
-    edge_min_down: float,
-    max_vol_5m: float,
-    max_model_prob_up: float,
-    max_model_prob_down: float,
-    min_down_mom_1m_abs: float,
+    regime_profile: str,
     initial_balance: float,
     risk_per_trade: float,
     compounding: bool,
@@ -375,19 +617,15 @@ def account_simulation(
     for row in rows:
         if row.get("market_prob_up") is None or row.get("outcome_up") is None:
             continue
-        if not apply_signal_rule(
-            row,
-            edge_min_up=edge_min_up,
-            edge_min_down=edge_min_down,
-            max_vol_5m=max_vol_5m,
-            max_model_prob_up=max_model_prob_up,
-            max_model_prob_down=max_model_prob_down,
-            min_down_mom_1m_abs=min_down_mom_1m_abs,
-        ):
+        if not apply_signal_rule(row, regime_profile=regime_profile):
             continue
 
+        params = regime_params(regime_profile, row.get("regime"))
+        risk_mult = max(0.0, min(float(params.get("risk_multiplier", 1.0)), 2.0))
+        effective_r = max(0.0, min(1.0, r * risk_mult))
         trade_pnl = float(row.get("trade_pnl") or 0.0)
-        stake = (balance if compounding else base_balance) * r
+        sizing_base = balance if compounding else min(base_balance, balance)
+        stake = sizing_base * effective_r
         stake = max(0.0, min(stake, balance))
         pnl_usd = stake * trade_pnl
         balance += pnl_usd
@@ -420,50 +658,6 @@ def account_simulation(
     }
 
 
-def optimize_signal_params(
-    train_rows: List[Dict[str, Any]],
-    edge_grid: List[float],
-    vol_grid: List[float],
-    model_prob_grid: List[float],
-    min_trades: int,
-    edge_min_down: float,
-    max_model_prob_down: float,
-    min_down_mom_1m_abs: float,
-) -> Dict[str, float]:
-    best = None
-    for edge_min_up in edge_grid:
-        for max_vol_5m in vol_grid:
-            for max_model_prob_up in model_prob_grid:
-                m = trade_metrics(
-                    train_rows,
-                    edge_min_up=edge_min_up,
-                    edge_min_down=edge_min_down,
-                    max_vol_5m=max_vol_5m,
-                    max_model_prob_up=max_model_prob_up,
-                    max_model_prob_down=max_model_prob_down,
-                    min_down_mom_1m_abs=min_down_mom_1m_abs,
-                )
-                if m["trades"] < min_trades:
-                    continue
-                # Primary objective: cumulative pnl, tie-break by avg pnl then win rate.
-                key = (m["cum_pnl"], m["avg_pnl_on_trades"], m["win_rate"])
-                if best is None or key > best["key"]:
-                    best = {
-                        "key": key,
-                        "edge_min_up": edge_min_up,
-                        "max_vol_5m": max_vol_5m,
-                        "max_model_prob_up": max_model_prob_up,
-                    }
-
-    if best is None:
-        return {"edge_min_up": 0.11, "max_vol_5m": 0.002, "max_model_prob_up": 0.75}
-    return {
-        "edge_min_up": float(best["edge_min_up"]),
-        "max_vol_5m": float(best["max_vol_5m"]),
-        "max_model_prob_up": float(best["max_model_prob_up"]),
-    }
-
-
 def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Dict[str, Any]:
     eligible = [
         r for r in rows if r.get("market_prob_up") is not None and r.get("outcome_up") is not None
@@ -476,9 +670,7 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
     initial_balance = float(args.initial_balance)
     risk_per_trade = float(args.risk_per_trade)
     compounding = bool(args.compounding)
-    edge_min_down = float(args.signal_edge_min_down)
-    max_model_prob_down = float(args.signal_max_model_prob_down)
-    min_down_mom_1m_abs = float(args.signal_min_down_mom_1m_abs)
+    regime_profile = normalize_profile(args.regime_profile)
 
     if n < train_n + test_n:
         return {
@@ -487,9 +679,7 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
             "eligible_rows": n,
         }
 
-    edge_grid = [i / 100 for i in range(0, 31)]
-    vol_grid = [0.0015, 0.0018, 0.0020, 0.0022, 0.0025, 0.0030]
-    model_prob_grid = [0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00]
+    params = {"regime_profile": regime_profile}
     folds: List[Dict[str, Any]] = []
 
     # Cumulative balance that carries across folds.
@@ -500,62 +690,25 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
         train_rows = eligible[start : start + train_n]
         test_rows = eligible[start + train_n : start + train_n + test_n]
 
-        params = optimize_signal_params(
-            train_rows=train_rows,
-            edge_grid=edge_grid,
-            vol_grid=vol_grid,
-            model_prob_grid=model_prob_grid,
-            min_trades=min_trades,
-            edge_min_down=edge_min_down,
-            max_model_prob_down=max_model_prob_down,
-            min_down_mom_1m_abs=min_down_mom_1m_abs,
-        )
-
-        train_m = trade_metrics(
-            train_rows,
-            params["edge_min_up"],
-            edge_min_down,
-            params["max_vol_5m"],
-            params["max_model_prob_up"],
-            max_model_prob_down,
-            min_down_mom_1m_abs,
-        )
-        test_m = trade_metrics(
-            test_rows,
-            params["edge_min_up"],
-            edge_min_down,
-            params["max_vol_5m"],
-            params["max_model_prob_up"],
-            max_model_prob_down,
-            min_down_mom_1m_abs,
-        )
+        train_m = trade_metrics(train_rows, regime_profile=params["regime_profile"])
+        test_m = trade_metrics(test_rows, regime_profile=params["regime_profile"])
 
         # Collect per-trade PnL values for the test set so the frontend can
         # replay account simulation with user-chosen balance/risk/compounding.
         test_trade_pnls: List[float] = []
+        test_trade_risk_multipliers: List[float] = []
         for r in test_rows:
             if r.get("market_prob_up") is None or r.get("outcome_up") is None:
                 continue
-            if apply_signal_rule(
-                r,
-                edge_min_up=params["edge_min_up"],
-                edge_min_down=edge_min_down,
-                max_vol_5m=params["max_vol_5m"],
-                max_model_prob_up=params["max_model_prob_up"],
-                max_model_prob_down=max_model_prob_down,
-                min_down_mom_1m_abs=min_down_mom_1m_abs,
-            ):
+            if apply_signal_rule(r, regime_profile=params["regime_profile"]):
                 test_trade_pnls.append(float(r.get("trade_pnl") or 0.0))
+                rp = regime_params(params["regime_profile"], r.get("regime"))
+                test_trade_risk_multipliers.append(float(rp.get("risk_multiplier", 1.0)))
 
         # Per-fold account sim on test rows (standalone, starting from initial_balance).
         test_account = account_simulation(
             test_rows,
-            edge_min_up=params["edge_min_up"],
-            edge_min_down=edge_min_down,
-            max_vol_5m=params["max_vol_5m"],
-            max_model_prob_up=params["max_model_prob_up"],
-            max_model_prob_down=max_model_prob_down,
-            min_down_mom_1m_abs=min_down_mom_1m_abs,
+            regime_profile=params["regime_profile"],
             initial_balance=initial_balance,
             risk_per_trade=risk_per_trade,
             compounding=compounding,
@@ -564,12 +717,7 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
         # Cumulative account sim: start from the carry-forward balance.
         cumulative_account = account_simulation(
             test_rows,
-            edge_min_up=params["edge_min_up"],
-            edge_min_down=edge_min_down,
-            max_vol_5m=params["max_vol_5m"],
-            max_model_prob_up=params["max_model_prob_up"],
-            max_model_prob_down=max_model_prob_down,
-            min_down_mom_1m_abs=min_down_mom_1m_abs,
+            regime_profile=params["regime_profile"],
             initial_balance=cumulative_balance,
             risk_per_trade=risk_per_trade,
             compounding=compounding,
@@ -587,6 +735,7 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
                 "test": test_m,
                 "test_account": test_account,
                 "test_trade_pnls": test_trade_pnls,
+                "test_trade_risk_multipliers": test_trade_risk_multipliers,
             }
         )
 
@@ -658,28 +807,15 @@ def run_walk_forward(rows: List[Dict[str, Any]], args: argparse.Namespace) -> Di
             "initial_balance": initial_balance,
             "risk_per_trade": risk_per_trade,
             "compounding": compounding,
-            "search_space": {
-                "edge_grid": edge_grid,
-                "vol_grid": vol_grid,
-                "max_model_prob_up_grid": model_prob_grid,
-            },
-            "fixed_side_filters": {
-                "edge_min_down": edge_min_down,
-                "max_model_prob_down": max_model_prob_down,
-                "min_down_mom_1m_abs": min_down_mom_1m_abs,
-            },
+            "mode": "regime_auto",
+            "regime_profile": regime_profile,
+            "signal_policy": policy_snapshot(regime_profile),
         },
     }
 
 
 def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
-    fee_buffer = float(args.fee_buffer)
-    signal_edge_min_up = float(args.signal_edge_min_up)
-    signal_edge_min_down = float(args.signal_edge_min_down)
-    signal_max_vol_5m = float(args.signal_max_vol_5m)
-    signal_max_model_prob_up = float(args.signal_max_model_prob_up)
-    signal_max_model_prob_down = float(args.signal_max_model_prob_down)
-    signal_min_down_mom_1m_abs = float(args.signal_min_down_mom_1m_abs)
+    regime_profile = normalize_profile(args.regime_profile)
     timeline_start_iso = str(args.timeline_start_iso or "").strip()
     timeline_end_iso = str(args.timeline_end_iso or "").strip()
     timeline_start_ts: Optional[int] = None
@@ -797,6 +933,8 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
         score = features["mom_1m"] * 180 + features["mom_3m"] * 120 - features["vol_5m"] * 40
         model_prob_up = clamp01(sigmoid(score))
         regime = classify_regime(features)
+        signal_params = regime_params(regime_profile, regime)
+        fee_buffer = float(signal_params["fee_buffer"])
 
         edge = None
         signal = "SKIP"
@@ -828,22 +966,22 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
                 edge = edge_up
                 model_prob_side = model_prob_up
                 market_prob_side = market_prob_up
-                side_edge_min = signal_edge_min_up
-                side_max_model_prob = signal_max_model_prob_up
+                side_edge_min = float(signal_params["edge_min_up"])
+                side_max_model_prob = float(signal_params["max_model_prob_up"])
                 side_mom_1m_ok = True
             else:
                 bet_side = "DOWN"
                 edge = edge_down
                 model_prob_side = model_prob_down
                 market_prob_side = market_prob_down
-                side_edge_min = signal_edge_min_down
-                side_max_model_prob = signal_max_model_prob_down
-                side_mom_1m_ok = features["mom_1m"] <= -signal_min_down_mom_1m_abs
+                side_edge_min = float(signal_params["edge_min_down"])
+                side_max_model_prob = float(signal_params["max_model_prob_down"])
+                side_mom_1m_ok = features["mom_1m"] <= -float(signal_params["min_down_mom_1m_abs"])
             signal = (
                 "TRADE"
                 if (
                     edge > side_edge_min
-                    and features["vol_5m"] <= signal_max_vol_5m
+                    and features["vol_5m"] <= float(signal_params["max_vol_5m"])
                     and model_prob_side <= side_max_model_prob
                     and side_mom_1m_ok
                 )
@@ -878,11 +1016,15 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
             "regime": regime,
             "bet_side": bet_side,
             "model_prob_up": model_prob_up,
+            "model_prob_up_raw": model_prob_up,
+            "model_prob_down": (1.0 - model_prob_up) if model_prob_up is not None else None,
+            "model_prob_down_raw": (1.0 - model_prob_up) if model_prob_up is not None else None,
             "model_prob_side": model_prob_side,
             "market_prob_up": market_prob_up,
             "market_prob_side": market_prob_side,
             "market_volume": market_volume,
             "fee_buffer": fee_buffer,
+            "risk_multiplier": float(signal_params["risk_multiplier"]),
             "edge": edge,
             "edge_up": edge_up,
             "edge_down": edge_down,
@@ -897,6 +1039,19 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
         }
         rows.append(row)
 
+    calibration = None
+    calibration_file = out_dir / "model_calibration.json"
+    if not bool(args.disable_side_calibration):
+        calibration = build_side_calibration(
+            rows,
+            num_bins=int(args.calibration_bins),
+            min_samples=int(args.calibration_min_samples),
+            laplace_alpha=float(args.calibration_laplace_alpha),
+            max_blend=float(args.calibration_max_blend),
+        )
+        apply_calibration_to_rows(rows, regime_profile=regime_profile, calibration=calibration)
+        calibration_file.write_text(json.dumps(calibration, indent=2))
+
     csv_file = out_dir / "backtest_rows.csv"
     with csv_file.open("w", newline="") as f:
         if rows:
@@ -904,23 +1059,10 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
             writer.writeheader()
             writer.writerows(rows)
 
-    trade_summary = trade_metrics(
-        rows,
-        edge_min_up=signal_edge_min_up,
-        edge_min_down=signal_edge_min_down,
-        max_vol_5m=signal_max_vol_5m,
-        max_model_prob_up=signal_max_model_prob_up,
-        max_model_prob_down=signal_max_model_prob_down,
-        min_down_mom_1m_abs=signal_min_down_mom_1m_abs,
-    )
+    trade_summary = trade_metrics(rows, regime_profile=regime_profile)
     account_summary = account_simulation(
         rows,
-        edge_min_up=signal_edge_min_up,
-        edge_min_down=signal_edge_min_down,
-        max_vol_5m=signal_max_vol_5m,
-        max_model_prob_up=signal_max_model_prob_up,
-        max_model_prob_down=signal_max_model_prob_down,
-        min_down_mom_1m_abs=signal_min_down_mom_1m_abs,
+        regime_profile=regime_profile,
         initial_balance=initial_balance,
         risk_per_trade=risk_per_trade,
         compounding=compounding,
@@ -943,16 +1085,24 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
         "notes": [
             "BTC features are approximated from 1-minute Binance US candles, not 5-second ticks.",
             "Market implied probability is taken from CLOB prices-history nearest to market startTime (fallback near end).",
-            "Fee buffer is modeled as a fixed probability drag per trade.",
+            "Signal thresholds and risk multipliers are auto-selected by regime profile.",
         ],
+        "signal_policy": policy_snapshot(regime_profile),
         "signal_params": {
-            "edge_min": signal_edge_min_up,
-            "edge_min_up": signal_edge_min_up,
-            "edge_min_down": signal_edge_min_down,
-            "max_vol_5m": signal_max_vol_5m,
-            "max_model_prob_up": signal_max_model_prob_up,
-            "max_model_prob_down": signal_max_model_prob_down,
-            "min_down_mom_1m_abs": signal_min_down_mom_1m_abs,
+            "mode": "regime_auto",
+            "profile": regime_profile,
+        },
+        "model_calibration": {
+            "enabled": bool(calibration),
+            "method": calibration.get("method") if isinstance(calibration, dict) else None,
+            "file": str(calibration_file) if bool(calibration) else None,
+            "sides": calibration.get("sides") if isinstance(calibration, dict) else None,
+        },
+        "strategy": {
+            "risk_per_trade_pct": risk_per_trade * 100.0,
+            "risk_per_trade": risk_per_trade,
+            "compounding": compounding,
+            "regime_profile": regime_profile,
         },
         "timeline": {
             "mode": "fixed" if (timeline_start_ts is not None or timeline_end_ts is not None) else "open",
@@ -988,37 +1138,11 @@ def build_backtest(args: argparse.Namespace) -> Dict[str, Any]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Backtest BTC Up/Down 5m strategy against Polymarket history.")
     parser.add_argument("--out-dir", default="backtest_results", help="Output directory for CSV, summary, cache")
-    parser.add_argument("--fee-buffer", type=float, default=float(os.getenv("FEE_BUFFER", "0.03")))
     parser.add_argument("--closed-only", action="store_true", default=True)
     parser.add_argument("--include-open", action="store_true", help="Include currently open markets")
     parser.add_argument("--refresh", action="store_true", help="Refresh cached API/candle data")
     parser.add_argument("--max-events", type=int, default=0, help="If >0, backtest only the most recent N events")
-    parser.add_argument(
-        "--signal-edge-min-up",
-        type=float,
-        default=float(os.getenv("SIGNAL_EDGE_MIN_UP", os.getenv("SIGNAL_EDGE_MIN", "0.11"))),
-    )
-    parser.add_argument(
-        "--signal-edge-min-down",
-        type=float,
-        default=float(os.getenv("SIGNAL_EDGE_MIN_DOWN", "0.18")),
-    )
-    parser.add_argument("--signal-max-vol-5m", type=float, default=float(os.getenv("SIGNAL_MAX_VOL_5M", "0.002")))
-    parser.add_argument(
-        "--signal-max-model-prob-up",
-        type=float,
-        default=float(os.getenv("SIGNAL_MAX_MODEL_PROB_UP", "0.75")),
-    )
-    parser.add_argument(
-        "--signal-max-model-prob-down",
-        type=float,
-        default=float(os.getenv("SIGNAL_MAX_MODEL_PROB_DOWN", "1.0")),
-    )
-    parser.add_argument(
-        "--signal-min-down-mom-1m-abs",
-        type=float,
-        default=float(os.getenv("SIGNAL_MIN_DOWN_MOM_1M_ABS", "0.003")),
-    )
+    parser.add_argument("--regime-profile", default=None, choices=["balanced", "conservative", "aggressive"])
     parser.add_argument(
         "--timeline-start-iso",
         default=os.getenv("BACKTEST_TIMELINE_START_ISO", ""),
@@ -1044,8 +1168,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--risk-per-trade",
         type=float,
-        default=float(os.getenv("RISK_PER_TRADE", "0.02")),
+        default=None,
         help="Fraction of account (or base balance if no-compounding) allocated per trade.",
+    )
+    parser.add_argument(
+        "--compounding",
+        dest="compounding",
+        action="store_true",
+        help="Use compounding position sizing.",
     )
     parser.add_argument(
         "--no-compounding",
@@ -1053,7 +1183,7 @@ def parse_args() -> argparse.Namespace:
         action="store_false",
         help="Use fixed notional per trade based on initial balance.",
     )
-    parser.set_defaults(compounding=True)
+    parser.set_defaults(compounding=None)
     parser.add_argument(
         "--walk-forward",
         dest="walk_forward",
@@ -1070,10 +1200,48 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wf-train-rows", type=int, default=600)
     parser.add_argument("--wf-test-rows", type=int, default=120)
     parser.add_argument("--wf-min-trades", type=int, default=20)
+    parser.add_argument(
+        "--disable-side-calibration",
+        action="store_true",
+        help="Disable side-specific model probability calibration and use raw probabilities.",
+    )
+    parser.add_argument(
+        "--calibration-bins",
+        type=int,
+        default=int(os.getenv("MODEL_CALIBRATION_BINS", "12")),
+        help="Number of probability bins used for side-specific calibration.",
+    )
+    parser.add_argument(
+        "--calibration-min-samples",
+        type=int,
+        default=int(os.getenv("MODEL_CALIBRATION_MIN_SAMPLES", "80")),
+        help="Minimum number of side-specific samples before calibration is enabled.",
+    )
+    parser.add_argument(
+        "--calibration-laplace-alpha",
+        type=float,
+        default=float(os.getenv("MODEL_CALIBRATION_LAPLACE_ALPHA", "2.0")),
+        help="Laplace smoothing alpha for per-bin empirical win rates.",
+    )
+    parser.add_argument(
+        "--calibration-max-blend",
+        type=float,
+        default=float(os.getenv("MODEL_CALIBRATION_MAX_BLEND", "0.35")),
+        help="Maximum blend of calibrated probability into raw model probability (0-1).",
+    )
     args = parser.parse_args()
 
     if args.include_open:
         args.closed_only = False
+    if args.regime_profile is None:
+        args.regime_profile = default_regime_profile(args.out_dir)
+    args.regime_profile = normalize_profile(args.regime_profile)
+
+    if args.risk_per_trade is None:
+        args.risk_per_trade = default_risk_per_trade(args.out_dir)
+    args.risk_per_trade = max(0.0, min(float(args.risk_per_trade), 1.0))
+    if args.compounding is None:
+        args.compounding = default_compounding(args.out_dir)
 
     return args
 

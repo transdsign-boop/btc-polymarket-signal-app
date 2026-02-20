@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -7,11 +9,28 @@
 }
 
 body {
-  @apply min-h-screen bg-slate-950 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-100;
+  font-family: 'Space Grotesk', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  @apply min-h-screen text-slate-100;
+  background:
+    radial-gradient(1400px 720px at 8% -10%, rgba(6, 182, 212, 0.22), transparent 52%),
+    radial-gradient(1000px 620px at 96% 0%, rgba(249, 115, 22, 0.16), transparent 48%),
+    linear-gradient(140deg, #020617 0%, #0b1220 38%, #020617 100%);
+}
+
+h1,
+h2,
+h3 {
+  letter-spacing: -0.015em;
+}
+
+.font-mono,
+code,
+pre {
+  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
 }
 
 .card {
-  @apply rounded-2xl border border-slate-800 bg-panel/80 p-5 shadow-lg shadow-black/20;
+  @apply rounded-2xl border border-slate-800 bg-panel/80 p-5 shadow-lg shadow-black/20 backdrop-blur-sm;
 }
 
 .label {

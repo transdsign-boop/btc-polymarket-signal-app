@@ -2,6 +2,27 @@
 // In production, default to same-origin (when served behind the backend) unless VITE_API_BASE is set.
 const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? 'http://localhost:8000' : '')
 
+export function getLiveStreamWebSocketUrl() {
+  const configured = import.meta.env.VITE_API_BASE || ''
+  if (configured) {
+    if (configured.startsWith('ws://') || configured.startsWith('wss://')) {
+      return `${configured.replace(/\/$/, '')}/ws/live-stream`
+    }
+    if (configured.startsWith('http://')) {
+      return `${configured.replace(/^http:\/\//, 'ws://').replace(/\/$/, '')}/ws/live-stream`
+    }
+    if (configured.startsWith('https://')) {
+      return `${configured.replace(/^https:\/\//, 'wss://').replace(/\/$/, '')}/ws/live-stream`
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    const wsProto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+    return `${wsProto}://${window.location.host}/ws/live-stream`
+  }
+  return 'ws://localhost:8000/ws/live-stream'
+}
+
 export async function tick() {
   const res = await fetch(`${API_BASE}/tick`, { method: 'POST' })
   if (!res.ok) throw new Error(`tick failed: ${res.status}`)
@@ -41,14 +62,12 @@ export async function fetchDecisions(limit = 500) {
   return res.json()
 }
 
-export async function resetPaperTrading(initialBalance = 10000, riskPct = 2.0, compounding = true) {
+export async function resetPaperTrading(initialBalance = 10000) {
   const res = await fetch(`${API_BASE}/paper/reset`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       initial_balance: initialBalance,
-      risk_per_trade_pct: riskPct,
-      compounding,
     }),
   })
   if (!res.ok) throw new Error(`paper reset failed: ${res.status}`)
@@ -111,5 +130,41 @@ export async function setLiveAccount(balanceUsd, startingBalanceUsd = null) {
     body: JSON.stringify(payload),
   })
   if (!res.ok) throw new Error(`live account update failed: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchStrategyState() {
+  const res = await fetch(`${API_BASE}/strategy/state`)
+  if (!res.ok) throw new Error(`strategy state failed: ${res.status}`)
+  return res.json()
+}
+
+export async function updateStrategyConfig(strategyConfig = {}) {
+  const payload = {
+    risk_per_trade_pct: Number(strategyConfig.risk_per_trade_pct),
+    compounding: Boolean(strategyConfig.compounding),
+    regime_profile: String(strategyConfig.regime_profile || 'balanced'),
+  }
+  const res = await fetch(`${API_BASE}/strategy/update`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(`strategy update failed: ${res.status}`)
+  return res.json()
+}
+
+export async function runLiveLatencyTest(slug = '') {
+  const params = new URLSearchParams()
+  if (slug) params.set('slug', String(slug))
+  const url = `${API_BASE}/live/latency/test${params.toString() ? `?${params.toString()}` : ''}`
+  const res = await fetch(url, { method: 'POST' })
+  if (!res.ok) throw new Error(`live latency test failed: ${res.status}`)
+  return res.json()
+}
+
+export async function runLiveClaim() {
+  const res = await fetch(`${API_BASE}/live/claim/run`, { method: 'POST' })
+  if (!res.ok) throw new Error(`live claim run failed: ${res.status}`)
   return res.json()
 }

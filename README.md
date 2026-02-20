@@ -142,6 +142,20 @@ flyctl secrets set \
   LIVE_KILL_SWITCH=false
 ```
 
+Auto-claim (redeem winnings) requires relayer builder credentials:
+
+```bash
+flyctl secrets set \
+  POLYMARKET_RELAYER_URL=https://relayer.polymarket.com \
+  POLYMARKET_BUILDER_API_KEY=<YOUR_BUILDER_KEY> \
+  POLYMARKET_BUILDER_API_SECRET=<YOUR_BUILDER_SECRET> \
+  POLYMARKET_BUILDER_API_PASSPHRASE=<YOUR_BUILDER_PASSPHRASE> \
+  LIVE_AUTO_CLAIM_ENABLED=true \
+  LIVE_AUTO_CLAIM_CHECK_SECONDS=20 \
+  LIVE_AUTO_CLAIM_WAIT_SECONDS=20 \
+  LIVE_AUTO_CLAIM_MAX_ATTEMPTS=6
+```
+
 Recommended guardrails:
 
 ```bash
@@ -175,6 +189,9 @@ curl -X POST https://<app>.fly.dev/live/kill -H "Content-Type: application/json"
 
 # temporary pause (seconds)
 curl -X POST https://<app>.fly.dev/live/pause -H "Content-Type: application/json" -d "{\"seconds\":600}"
+
+# run a manual claim cycle immediately
+curl -X POST https://<app>.fly.dev/live/claim/run
 ```
 
 Notes:
