@@ -581,7 +581,8 @@ def _resolve_pending_trades(paper: Dict[str, Any]) -> None:
             continue
 
         # Wait for settlement grace period after market close
-        if now < trade["resolve_ts"] + PAPER_SETTLEMENT_GRACE_SECONDS:
+        resolve_ts = trade.get("resolve_ts")
+        if resolve_ts and now < resolve_ts + PAPER_SETTLEMENT_GRACE_SECONDS:
             continue
 
         try:
