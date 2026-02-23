@@ -3281,6 +3281,7 @@ def paper_reset(req: PaperResetRequest) -> Dict[str, Any]:
         state["config"]["risk_per_trade_pct"] = strategy_risk_pct
         state["config"]["compounding"] = strategy_compounding
         state["balance"] = req.initial_balance
+        state["peak_balance"] = req.initial_balance
         _save_paper_state(state)
     return {"ok": True, "balance": req.initial_balance, "strategy": _strategy_snapshot(regime=regime)}
 
