@@ -176,6 +176,7 @@ def _fresh_paper_state() -> Dict[str, Any]:
             "compounding": compounding,
         },
         "balance": PAPER_INITIAL_BALANCE,
+        "peak_balance": PAPER_INITIAL_BALANCE,
         "trades": [],
     }
 
@@ -198,6 +199,11 @@ def _load_paper_state() -> Dict[str, Any]:
                     changed = True
                 if bool(cfg.get("compounding")) != strategy_compounding:
                     cfg["compounding"] = strategy_compounding
+                    changed = True
+                # Initialize peak_balance if missing (backward compatibility)
+                if "peak_balance" not in data:
+                    current_balance = float(data.get("balance", PAPER_INITIAL_BALANCE))
+                    data["peak_balance"] = max(current_balance, PAPER_INITIAL_BALANCE)
                     changed = True
                 trades = data.get("trades")
                 if not isinstance(trades, list):
@@ -329,6 +335,27 @@ def _current_strategy_values() -> tuple[float, bool]:
     return risk_pct, compounding
 
 
+def _get_drawdown_scale(current_balance: float, peak_balance: float) -> float:
+    """Calculate position size scaling based on drawdown from peak.
+    
+    Returns a multiplier (0.1 to 1.0) to apply to stake size:
+    - Drawdown < 30%: 1.0 (full stakes)
+    - Drawdown 30-40%: 0.25 (25% of normal stakes)
+    - Drawdown > 40%: 0.1 (10% of normal stakes)
+    """
+    if peak_balance <= 0 or current_balance >= peak_balance:
+        return 1.0
+    
+    drawdown_pct = ((peak_balance - current_balance) / peak_balance) * 100.0
+    
+    if drawdown_pct >= 40.0:
+        return 0.1
+    elif drawdown_pct >= 30.0:
+        return 0.25
+    else:
+        return 1.0
+
+
 def _maybe_enter_paper_trade(paper: Dict[str, Any], state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if state.get("signal") != "TRADE":
         return None
@@ -343,6 +370,11 @@ def _maybe_enter_paper_trade(paper: Dict[str, Any], state: Dict[str, Any]) -> Op
 
     config = paper["config"]
     balance = paper["balance"]
+    peak_balance = paper.get("peak_balance", balance)
+    
+    # Apply drawdown-based position scaling
+    drawdown_scale = _get_drawdown_scale(balance, peak_balance)
+    
     signal_params = state.get("signal_params") if isinstance(state.get("signal_params"), dict) else {}
     risk_multiplier = _safe_float(signal_params.get("risk_multiplier"))
     if risk_multiplier is None:
@@ -352,7 +384,10 @@ def _maybe_enter_paper_trade(paper: Dict[str, Any], state: Dict[str, Any]) -> Op
     risk_frac = max(0.0, min(1.0, float(risk_frac)))
     fixed_base = float(config.get("initial_balance") or balance)
     stake_base = balance if config["compounding"] else min(fixed_base, float(balance))
-    stake = max(0.0, min(balance, stake_base * risk_frac))
+    base_stake = max(0.0, min(balance, stake_base * risk_frac))
+    
+    # Apply drawdown scaling to the stake
+    stake = base_stake * drawdown_scale
     if stake <= 0:
         return None
 
@@ -587,6 +622,10 @@ def _resolve_pending_trades(paper: Dict[str, Any]) -> None:
             trade["hit"] = outcome_side >= 0.5
             paper["balance"] = round(paper["balance"] + pnl_usd, 2)
             trade["balance_after"] = paper["balance"]
+            # Update peak balance if current balance is higher
+            current_peak = paper.get("peak_balance", paper["balance"])
+            if paper["balance"] > current_peak:
+                paper["peak_balance"] = paper["balance"]
             changed = True
         except Exception:
             continue
@@ -620,8 +659,18 @@ def _paper_summary(paper: Dict[str, Any]) -> Dict[str, Any]:
         max_drawdown = max(max_drawdown, peak - equity)
     max_drawdown_pct = (max_drawdown / peak) if peak > 0 else None
 
+    # Calculate current drawdown from peak
+    current_balance = float(paper["balance"])
+    current_peak = float(paper.get("peak_balance", current_balance))
+    current_drawdown = max(0.0, current_peak - current_balance)
+    current_drawdown_pct = (current_drawdown / current_peak * 100.0) if current_peak > 0 else 0.0
+    
     return {
         "balance": paper["balance"],
+        "peak_balance": current_peak,
+        "current_drawdown_usd": round(current_drawdown, 2),
+        "current_drawdown_pct": round(current_drawdown_pct, 2),
+        "position_scale": _get_drawdown_scale(current_balance, current_peak),
         "initial_balance": initial_balance,
         "total_trades": len(trades),
         "resolved": len(resolved),
