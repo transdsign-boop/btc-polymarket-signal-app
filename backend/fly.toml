@@ -1,4 +1,4 @@
-app = "btc-poly-backend-02170733"
+app = "btc-edge-hunter-backend"
 primary_region = "ams"
 
 [build]
