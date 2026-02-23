@@ -1326,18 +1326,24 @@ export default function App() {
           <table className="min-w-full text-sm">
             <thead className="bg-slate-900/70 text-slate-300">
               <tr>
-                <th className="px-3 py-2 text-left">Entry</th>
+                <th className="px-3 py-2 text-left">ID</th>
+                <th className="px-3 py-2 text-left">Entry Date/Time</th>
                 <th className="px-3 py-2 text-left">Resolve</th>
+                <th className="px-3 py-2 text-right">BTC Price</th>
                 <th className="px-3 py-2 text-left">Regime</th>
                 <th className="px-3 py-2 text-left">Slug</th>
+                <th className="px-3 py-2 text-right">Model Prob</th>
+                <th className="px-3 py-2 text-right">Market Prob</th>
                 <th className="px-3 py-2 text-left">Bet</th>
                 <th className="px-3 py-2 text-left">Outcome</th>
-                <th className="px-3 py-2 text-left">Edge</th>
+                <th className="px-3 py-2 text-right">Edge</th>
+                <th className="px-3 py-2 text-right">Fee Buffer</th>
                 <th className="px-3 py-2 text-right">Stake</th>
                 <th className="px-3 py-2 text-right">Fill Px</th>
                 <th className="px-3 py-2 text-right">Fill vs Mkt</th>
                 <th className="px-3 py-2 text-left">Status</th>
                 <th className="px-3 py-2 text-left">Result</th>
+                <th className="px-3 py-2 text-right">PnL %</th>
                 <th className="px-3 py-2 text-right">PnL ($)</th>
                 <th className="px-3 py-2 text-right">Balance</th>
               </tr>
@@ -1347,23 +1353,32 @@ export default function App() {
                 const fillPx = asNum(t.fill_price) ?? asNum(t.market_prob_side)
                 const fillDiff = fillPx != null && asNum(t.market_prob_side) != null ? 0 : null
                 return (
-                  <tr key={t.id} className="border-t border-slate-800">
+                  <tr key={t.id} className="border-t border-slate-800 hover:bg-slate-800/30">
+                    <td className="px-3 py-2 text-slate-400">#{t.id}</td>
                     <td className="px-3 py-2 font-mono text-xs text-slate-400">
-                      {t.entry_iso ? new Date(t.entry_iso).toLocaleTimeString() : '-'}
+                      {t.entry_iso ? new Date(t.entry_iso).toLocaleString() : '-'}
                     </td>
                     <td className="px-3 py-2 font-mono text-xs text-slate-400">
-                      {t.resolve_ts ? new Date(Number(t.resolve_ts) * 1000).toLocaleTimeString() : '-'}
+                      {t.resolve_ts ? new Date(Number(t.resolve_ts) * 1000).toLocaleString() : '-'}
+                    </td>
+                    <td className="px-3 py-2 text-right text-slate-300">
+                      {t.btc_price ? `$${num(t.btc_price, 2)}` : '-'}
                     </td>
                     <td className="px-3 py-2 text-slate-300">{t.regime || '-'}</td>
-                    <td className="px-3 py-2 font-mono text-xs text-slate-300">{t.slug}</td>
+                    <td className="px-3 py-2 font-mono text-xs text-slate-300" title={t.slug}>{t.slug}</td>
+                    <td className="px-3 py-2 text-right text-slate-300">{pct(t.model_prob_up)}</td>
+                    <td className="px-3 py-2 text-right text-slate-300">{pct(t.market_prob_up)}</td>
                     <td className={`px-3 py-2 font-semibold ${(t.bet_side || 'UP') === 'UP' ? 'text-emerald-400' : 'text-amber-300'}`}>
                       {t.bet_side || 'UP'}
                     </td>
                     <td className={`px-3 py-2 font-semibold ${sideFromOutcome(t.outcome_up) === 'UP' ? 'text-emerald-400' : sideFromOutcome(t.outcome_up) === 'DOWN' ? 'text-red-300' : 'text-slate-500'}`}>
                       {sideFromOutcome(t.outcome_up)}
                     </td>
-                    <td className="px-3 py-2">{pct(t.edge)}</td>
-                    <td className="px-3 py-2 text-right">{usd(t.stake_usd)}</td>
+                    <td className={`px-3 py-2 text-right font-semibold ${(t.edge ?? 0) > 0 ? 'text-emerald-400' : 'text-slate-300'}`}>
+                      {pct(t.edge)}
+                    </td>
+                    <td className="px-3 py-2 text-right text-slate-400">{pct(t.fee_buffer)}</td>
+                    <td className="px-3 py-2 text-right text-slate-300">{usd(t.stake_usd)}</td>
                     <td className="px-3 py-2 text-right text-slate-200">{fillPx != null ? pct(fillPx) : '-'}</td>
                     <td className="px-3 py-2 text-right text-slate-400">{fillDiff != null ? pp(fillDiff) : '-'}</td>
                     <td className={`px-3 py-2 ${t.status === 'pending' ? 'text-amber-400' : t.status === 'resolved' ? 'text-slate-200' : 'text-slate-500'}`}>
@@ -1372,7 +1387,10 @@ export default function App() {
                     <td className={`px-3 py-2 font-semibold ${t.hit === true ? 'text-emerald-400' : t.hit === false ? 'text-red-300' : 'text-slate-500'}`}>
                       {t.hit === true ? 'WIN' : t.hit === false ? 'LOSS' : '-'}
                     </td>
-                    <td className={`px-3 py-2 text-right ${(t.pnl_usd ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-300'}`}>
+                    <td className={`px-3 py-2 text-right ${(t.trade_pnl_pct ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-300'}`}>
+                      {t.trade_pnl_pct != null ? pct(t.trade_pnl_pct) : '-'}
+                    </td>
+                    <td className={`px-3 py-2 text-right font-semibold ${(t.pnl_usd ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-300'}`}>
                       {t.pnl_usd != null ? usd(t.pnl_usd) : '-'}
                     </td>
                     <td className="px-3 py-2 text-right text-slate-300">
@@ -1383,7 +1401,7 @@ export default function App() {
               })}
               {!(paperState.trades || []).length ? (
                 <tr className="border-t border-slate-800">
-                  <td className="px-3 py-3 text-slate-400" colSpan={14}>
+                  <td className="px-3 py-3 text-slate-400" colSpan={20}>
                     No paper trades yet.
                   </td>
                 </tr>
