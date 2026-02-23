@@ -3745,7 +3745,7 @@ def root() -> Any:
 
 @app.get("/{full_path:path}")
 def spa_fallback(full_path: str) -> Any:
-    if full_path.startswith(("health", "state", "tick", "backtest/", "paper/", "decisions/", "live/", "strategy/")):
+    if full_path.startswith(("api/", "health", "state", "tick", "backtest/", "paper/", "decisions/", "live/", "strategy/")):
         return {"detail": "Not Found"}
     index_path = FRONTEND_DIST_DIR / "index.html"
     if index_path.exists():
