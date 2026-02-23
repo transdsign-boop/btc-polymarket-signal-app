@@ -8,6 +8,7 @@ primary_region = "ams"
   PORT = "8080"
   BACKTEST_DIR = "/data/backtest_results"
   BACKTEST_COMPARE_DIR = "/data/backtest_compare"
+  PAPER_INITIAL_BALANCE = "34"
 
 [http_service]
   internal_port = 8080
